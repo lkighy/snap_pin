@@ -20,6 +20,13 @@
         "cwd": "${workspaceFolder}"
       },
       "isBackground": true,
+      "runOptions": {
+        "reevaluateOnRerun": true
+      },
+      "presentation": {
+        "panel": "dedicated",
+        "clear": false
+      },
       "problemMatcher": {
         "owner": "vite",
         "pattern": {
@@ -31,6 +38,23 @@
           "beginsPattern": "vite .*",
           "endsPattern": "Local: +http://127\\.0\\.0\\.1:1420/"
         }
+      }
+    },
+    {
+      "label": "ui: ensure dev",
+      "type": "shell",
+      "command": "node",
+      "args": [
+        "${workspaceFolder}/.vscode/scripts/ensure-ui-dev.cjs"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent",
+        "panel": "dedicated",
+        "clear": true
       }
     },
     {
@@ -52,7 +76,7 @@
       "options": {
         "cwd": "${workspaceFolder}"
       },
-      "dependsOn": ["ui: dev"],
+      "dependsOn": ["ui: ensure dev"],
       "problemMatcher": "$rustc"
     },
     {

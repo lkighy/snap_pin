@@ -14,7 +14,7 @@
       },
       "args": [],
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "ui: dev"
+      "preLaunchTask": "ui: ensure dev"
     },
     {
       "name": "Tauri Desktop MVP CLI",

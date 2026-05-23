@@ -11,7 +11,10 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    mpsc::{self, Sender},
+};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -28,8 +31,13 @@ use shared_models::{Point, Rect, Size};
 use overlay_state::OverlayApp;
 
 const MIN_SELECTION_SIZE: f32 = 4.0;
-const CONTROL_PROTOCOL_VERSION: u32 = 1;
+const CONTROL_PROTOCOL_VERSION: u32 = 2;
+const COMMAND_ACK_TIMEOUT_MS: u64 = 5_000;
 const RESIDENT_IDLE_SIZE: f32 = 1.0;
+const RESIDENT_IDLE_X: f32 = -32000.0;
+const RESIDENT_IDLE_Y: f32 = -32000.0;
+const RESIDENT_IDLE_REPAINT_MS: u64 = 100;
+const SECONDARY_DISMISS_GRACE_MS: u64 = 180;
 
 fn main() -> eframe::Result<()> {
     let args = CliArgs::parse();
@@ -129,7 +137,7 @@ impl CliArgs {
             mask_opacity: 0.46,
             border_color: Color32::from_rgb(47, 138, 163),
             resident: false,
-            control_port: 47231,
+            control_port: 47232,
         };
 
         while let Some(arg) = args.next() {
@@ -329,9 +337,10 @@ fn native_options(args: &CliArgs) -> NativeOptions {
 
             if args.resident {
                 viewport
+                    .with_position([RESIDENT_IDLE_X, RESIDENT_IDLE_Y])
                     .with_inner_size([RESIDENT_IDLE_SIZE, RESIDENT_IDLE_SIZE])
                     .with_transparent(true)
-                    .with_visible(false)
+                    .with_visible(true)
             } else {
                 viewport
                     .with_position([args.x, args.y])
@@ -362,7 +371,7 @@ struct CaptureOverlayApp {
     mask_opacity: f32,
     border_color: Color32,
     resident: bool,
-    command_queue: Option<Arc<Mutex<VecDeque<OverlayCommand>>>>,
+    command_queue: Option<OverlayCommandQueue>,
     snapshot_path: Option<PathBuf>,
     snapshot_image: Option<DynamicImage>,
     snapshot_tiles: Vec<SnapshotTile>,
@@ -453,7 +462,9 @@ impl CaptureOverlayApp {
             }
         }
 
-        if pointer.secondary_clicked() {
+        if pointer.secondary_clicked()
+            && self.created_at.elapsed() > Duration::from_millis(SECONDARY_DISMISS_GRACE_MS)
+        {
             self.dismiss(ctx);
         }
     }
@@ -566,6 +577,7 @@ impl CaptureOverlayApp {
             self.clear_capture_state();
             self.status = CaptureStatus::Idle;
             park_resident_window(ctx);
+            request_resident_idle_repaint(ctx);
         } else {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
@@ -594,18 +606,30 @@ impl CaptureOverlayApp {
             }
         };
 
-        for command in commands {
-            match command {
+        for queued in commands {
+            let result = match queued.command {
                 OverlayCommand::Capture(command) => self.apply_capture_command(ctx, command),
-                OverlayCommand::Error(error) => self.last_error = Some(error),
+                OverlayCommand::Error(error) => {
+                    self.last_error = Some(error.clone());
+                    Err(error)
+                }
+            };
+
+            if let Some(completion) = queued.completion {
+                let _ = completion.send(result);
             }
         }
     }
 
-    fn apply_capture_command(&mut self, ctx: &Context, command: OverlayCaptureCommand) {
+    fn apply_capture_command(
+        &mut self,
+        ctx: &Context,
+        command: OverlayCaptureCommand,
+    ) -> Result<(), String> {
         if command.kind != "capture" {
-            self.last_error = Some(format!("unknown overlay command: {}", command.kind));
-            return;
+            let error = format!("unknown overlay command: {}", command.kind);
+            self.last_error = Some(error.clone());
+            return Err(error);
         }
 
         self.text = OverlayText::new(OverlayLanguage::from_code(&command.language));
@@ -627,6 +651,7 @@ impl CaptureOverlayApp {
                 self.last_error = None;
                 self.created_at = Instant::now();
                 show_capture_window(ctx, &command.snapshot);
+                Ok(())
             }
             Err(error) => {
                 self.clear_capture_state();
@@ -635,6 +660,7 @@ impl CaptureOverlayApp {
                     Point::new(command.snapshot.origin_x, command.snapshot.origin_y);
                 self.last_error = Some(error);
                 show_capture_window(ctx, &command.snapshot);
+                Ok(())
             }
         }
     }
@@ -644,6 +670,9 @@ impl App for CaptureOverlayApp {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         self.drain_commands(ctx);
         if matches!(self.status, CaptureStatus::Idle) {
+            if self.resident {
+                request_resident_idle_repaint(ctx);
+            }
             return;
         }
 
@@ -681,6 +710,14 @@ enum OverlayCommand {
     Error(String),
 }
 
+type OverlayCommandQueue = Arc<Mutex<VecDeque<QueuedOverlayCommand>>>;
+
+#[derive(Debug)]
+struct QueuedOverlayCommand {
+    command: OverlayCommand,
+    completion: Option<Sender<Result<(), String>>>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OverlayCaptureCommand {
@@ -709,21 +746,28 @@ struct SharedSnapshotCommand {
     origin_y: f32,
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OverlayControlResponse {
+    kind: &'static str,
+    message: Option<String>,
+}
+
 struct LoadedSharedSnapshot {
     image: DynamicImage,
     tiles: Vec<SnapshotTile>,
 }
 
-fn start_control_server(port: u16, queue: Arc<Mutex<VecDeque<OverlayCommand>>>, ctx: Context) {
+fn start_control_server(port: u16, queue: OverlayCommandQueue, ctx: Context) {
     thread::spawn(move || {
         let listener = match TcpListener::bind(("127.0.0.1", port)) {
             Ok(listener) => listener,
             Err(error) => {
                 push_overlay_command(
                     &queue,
-                    OverlayCommand::Error(format!(
+                    QueuedOverlayCommand::new(OverlayCommand::Error(format!(
                         "failed to bind overlay control port {port}: {error}"
-                    )),
+                    ))),
                 );
                 ctx.request_repaint();
                 return;
@@ -750,34 +794,55 @@ fn start_control_server(port: u16, queue: Arc<Mutex<VecDeque<OverlayCommand>>>, 
                                 );
                             } else {
                                 match serde_json::from_str::<OverlayCaptureCommand>(&line) {
-                                    Ok(command) => push_overlay_command(
-                                        &queue,
-                                        OverlayCommand::Capture(command),
-                                    ),
-                                    Err(error) => push_overlay_command(
-                                        &queue,
-                                        OverlayCommand::Error(format!(
-                                            "failed to parse overlay command: {error}"
-                                        )),
-                                    ),
+                                    Ok(command) => {
+                                        let (completion_tx, completion_rx) = mpsc::channel();
+                                        push_overlay_command(
+                                            &queue,
+                                            QueuedOverlayCommand::with_completion(
+                                                OverlayCommand::Capture(command),
+                                                completion_tx,
+                                            ),
+                                        );
+                                        ctx.request_repaint();
+
+                                        let result = completion_rx
+                                            .recv_timeout(Duration::from_millis(
+                                                COMMAND_ACK_TIMEOUT_MS,
+                                            ))
+                                            .unwrap_or_else(|_| {
+                                                Err("resident screenshot overlay did not process the capture command in time".to_owned())
+                                            });
+                                        write_control_response(&mut stream, result);
+                                    }
+                                    Err(error) => {
+                                        let message =
+                                            format!("failed to parse overlay command: {error}");
+                                        push_overlay_command(
+                                            &queue,
+                                            QueuedOverlayCommand::new(OverlayCommand::Error(
+                                                message.clone(),
+                                            )),
+                                        );
+                                        ctx.request_repaint();
+                                        write_control_response(&mut stream, Err(message));
+                                    }
                                 }
                             }
                         }
                         Err(error) => push_overlay_command(
                             &queue,
-                            OverlayCommand::Error(format!(
+                            QueuedOverlayCommand::new(OverlayCommand::Error(format!(
                                 "failed to read overlay command: {error}"
-                            )),
+                            ))),
                         ),
                     }
-                    ctx.request_repaint();
                 }
                 Err(error) => {
                     push_overlay_command(
                         &queue,
-                        OverlayCommand::Error(format!(
+                        QueuedOverlayCommand::new(OverlayCommand::Error(format!(
                             "overlay control connection failed: {error}"
-                        )),
+                        ))),
                     );
                     ctx.request_repaint();
                 }
@@ -786,10 +851,42 @@ fn start_control_server(port: u16, queue: Arc<Mutex<VecDeque<OverlayCommand>>>, 
     });
 }
 
-fn push_overlay_command(queue: &Arc<Mutex<VecDeque<OverlayCommand>>>, command: OverlayCommand) {
+impl QueuedOverlayCommand {
+    fn new(command: OverlayCommand) -> Self {
+        Self {
+            command,
+            completion: None,
+        }
+    }
+
+    fn with_completion(command: OverlayCommand, completion: Sender<Result<(), String>>) -> Self {
+        Self {
+            command,
+            completion: Some(completion),
+        }
+    }
+}
+
+fn push_overlay_command(queue: &OverlayCommandQueue, command: QueuedOverlayCommand) {
     if let Ok(mut queue) = queue.lock() {
         queue.push_back(command);
     }
+}
+
+fn write_control_response(stream: &mut impl Write, result: Result<(), String>) {
+    let response = match result {
+        Ok(()) => OverlayControlResponse {
+            kind: "accepted",
+            message: None,
+        },
+        Err(message) => OverlayControlResponse {
+            kind: "error",
+            message: Some(message),
+        },
+    };
+
+    let _ = serde_json::to_writer(&mut *stream, &response);
+    let _ = stream.write_all(b"\n");
 }
 
 fn is_supported_ping(line: &str) -> bool {
@@ -798,11 +895,21 @@ fn is_supported_ping(line: &str) -> bool {
 }
 
 fn park_resident_window(ctx: &Context) {
+    // Keep the resident window alive but invisible to the user. Fully hidden
+    // windows may stop receiving repaint wakeups, leaving future commands queued.
+    ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::new(
+        RESIDENT_IDLE_X,
+        RESIDENT_IDLE_Y,
+    )));
     ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(
         RESIDENT_IDLE_SIZE,
         RESIDENT_IDLE_SIZE,
     )));
-    ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+    ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+}
+
+fn request_resident_idle_repaint(ctx: &Context) {
+    ctx.request_repaint_after(Duration::from_millis(RESIDENT_IDLE_REPAINT_MS));
 }
 
 fn show_capture_window(ctx: &Context, snapshot: &SharedSnapshotCommand) {
@@ -816,6 +923,7 @@ fn show_capture_window(ctx: &Context, snapshot: &SharedSnapshotCommand) {
     )));
     ctx.send_viewport_cmd(ViewportCommand::Visible(true));
     ctx.send_viewport_cmd(ViewportCommand::Focus);
+    ctx.request_repaint();
 }
 
 fn load_shared_snapshot(
