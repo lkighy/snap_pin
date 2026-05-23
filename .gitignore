@@ -1,0 +1,26 @@
+# Rust
+/target/
+
+# Frontend
+**/node_modules/
+**/dist/
+**/.vite/
+**/.turbo/
+
+# Logs and local runtime files
+*.log
+*.pid
+*.tmp
+*.temp
+.devlogs/
+**/.devlogs/
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+desktop.ini

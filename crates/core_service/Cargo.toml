@@ -1,0 +1,12 @@
+[package]
+name = "core_service"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+ipc.workspace = true
+model_registry.workspace = true
+ocr_engine.workspace = true
+shared_models.workspace = true
+translate_engine.workspace = true

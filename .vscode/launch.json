@@ -1,0 +1,34 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Tauri Desktop",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["build", "-p", "tauri_desktop"],
+        "filter": {
+          "name": "tauri_desktop",
+          "kind": "bin"
+        }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "ui: dev"
+    },
+    {
+      "name": "Tauri Desktop MVP CLI",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["build", "-p", "tauri_desktop"],
+        "filter": {
+          "name": "tauri_desktop",
+          "kind": "bin"
+        }
+      },
+      "args": ["--mvp-cli"],
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

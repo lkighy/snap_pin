@@ -1,0 +1,28 @@
+﻿[workspace]
+members = [
+    "apps/tauri_desktop",
+    "apps/egui_overlay",
+    "crates/core_service",
+    "crates/model_registry",
+    "crates/ocr_engine",
+    "crates/platform_win32",
+    "crates/ipc",
+    "crates/shared_models",
+    "crates/translate_engine"
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["snap_pin contributors"]
+
+[workspace.dependencies]
+core_service = { path = "crates/core_service" }
+ipc = { path = "crates/ipc" }
+model_registry = { path = "crates/model_registry" }
+ocr_engine = { path = "crates/ocr_engine" }
+platform_win32 = { path = "crates/platform_win32" }
+shared_models = { path = "crates/shared_models" }
+translate_engine = { path = "crates/translate_engine" }

@@ -1,0 +1,91 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "ui: install",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["--dir", "apps/tauri_desktop/ui", "install"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "ui: dev",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["--dir", "apps/tauri_desktop/ui", "dev"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": {
+          "regexp": "^(.*)$",
+          "message": 1
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "vite .*",
+          "endsPattern": "Local: +http://127\\.0\\.0\\.1:1420/"
+        }
+      }
+    },
+    {
+      "label": "ui: build",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["--dir", "apps/tauri_desktop/ui", "build"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "problemMatcher": "$tsc"
+    },
+    {
+      "label": "tauri: dev",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["run", "-p", "tauri_desktop"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "dependsOn": ["ui: dev"],
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "tauri: release",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["run", "--release", "-p", "tauri_desktop"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "dependsOn": ["ui: build"],
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "tauri: mvp cli",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["run", "-p", "tauri_desktop", "--", "--mvp-cli"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "rust: check tauri",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["check", "-p", "tauri_desktop"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "problemMatcher": "$rustc"
+    }
+  ]
+}
