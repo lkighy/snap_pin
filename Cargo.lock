@@ -1412,10 +1412,13 @@ dependencies = [
 name = "egui_overlay"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "eframe",
  "image",
  "ipc",
+ "log",
  "platform_win32",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "shared_models",
@@ -3713,6 +3716,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 name = "platform_win32"
 version = "0.1.0"
 dependencies = [
+ "log",
  "shared_models",
  "windows 0.61.3",
  "windows-sys 0.61.2",

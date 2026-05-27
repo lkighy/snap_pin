@@ -7,12 +7,14 @@ mod pin;
 mod renderer;
 mod text_layer;
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
     mpsc::{self, Sender},
 };
 use std::thread;
@@ -21,10 +23,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use eframe::egui::{
     self, Align2, Color32, ColorImage, Context, CornerRadius, FontData, FontDefinitions,
     FontFamily, FontId, Id, Key, LayerId, Order, Painter, Pos2, Rect as EguiRect, Sense, Stroke,
-    StrokeKind, TextureHandle, TextureOptions, Vec2, ViewportBuilder, ViewportCommand,
+    StrokeKind, TextureHandle, TextureOptions, Vec2, ViewportBuilder, ViewportCommand, WindowLevel,
 };
 use eframe::{App, CreationContext, Frame, NativeOptions};
 use image::{DynamicImage, GenericImageView};
+use log::{LevelFilter, Metadata, Record};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use serde::Deserialize;
 use shared_models::{Point, Rect, Size};
 
@@ -38,10 +42,29 @@ const RESIDENT_IDLE_X: f32 = -32000.0;
 const RESIDENT_IDLE_Y: f32 = -32000.0;
 const RESIDENT_IDLE_REPAINT_MS: u64 = 100;
 const SECONDARY_DISMISS_GRACE_MS: u64 = 180;
+const CLICK_CAPTURE_MAX_DRAG_DISTANCE: f32 = 3.0;
+const SELECTION_EDGE_HIT_SIZE: f32 = 8.0;
+const SELECTION_MIN_SIZE: f32 = 12.0;
+const DEFERRED_SAVE_DELAY_MS: u64 = 80;
+const SAVE_CANCELED_CODE: &str = "save_canceled";
+const OVERLAY_LOG_FILE_NAME: &str = "snap_pin_overlay.log";
+
+static OVERLAY_LOGGER: OverlayFileLogger = OverlayFileLogger {
+    file: OnceLock::new(),
+};
 
 fn main() -> eframe::Result<()> {
+    init_logging();
     let args = CliArgs::parse();
+    log::info!(
+        "overlay starting mode={:?} resident={} snapshot={:?} image={:?}",
+        args.mode,
+        args.resident,
+        args.snapshot,
+        args.image
+    );
     if matches!(args.mode, OverlayRunMode::Capture) && !args.resident && args.snapshot.is_none() {
+        log::error!("capture overlay missing --snapshot in non-resident mode");
         eprintln!("snap pin capture overlay requires --snapshot <path> or --resident");
         return Ok(());
     }
@@ -61,6 +84,67 @@ fn main() -> eframe::Result<()> {
             OverlayRunMode::Pin => Ok(Box::new(PinWindowApp::new(creation_context, args))),
         }),
     )
+}
+
+struct OverlayFileLogger {
+    file: OnceLock<Mutex<File>>,
+}
+
+impl log::Log for OverlayFileLogger {
+    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &Record<'_>) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+
+        if let Some(file) = self.file.get()
+            && let Ok(mut file) = file.lock()
+        {
+            let _ = writeln!(
+                file,
+                "[{} pid={}] {:<5} {} - {}",
+                log_timestamp(),
+                std::process::id(),
+                record.level(),
+                record.target(),
+                record.args()
+            );
+        }
+    }
+
+    fn flush(&self) {
+        if let Some(file) = self.file.get()
+            && let Ok(mut file) = file.lock()
+        {
+            let _ = file.flush();
+        }
+    }
+}
+
+fn init_logging() {
+    let path = std::env::temp_dir().join(OVERLAY_LOG_FILE_NAME);
+    match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(file) => {
+            let _ = OVERLAY_LOGGER.file.set(Mutex::new(file));
+            if log::set_logger(&OVERLAY_LOGGER).is_ok() {
+                log::set_max_level(LevelFilter::Info);
+            }
+            log::info!("logging initialized at {}", path.display());
+        }
+        Err(error) => {
+            eprintln!("failed to initialize snap pin overlay log: {error}");
+        }
+    }
+}
+
+fn log_timestamp() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("{}.{:03}", now.as_secs(), now.subsec_millis())
 }
 
 fn install_system_fonts(ctx: &Context) {
@@ -236,12 +320,17 @@ impl OverlayLanguage {
 struct OverlayText {
     drag_hint: &'static str,
     toolbar_hint: &'static str,
+    pin_action: &'static str,
+    copy_action: &'static str,
+    save_action: &'static str,
     capturing: &'static str,
     missing_snapshot: &'static str,
     missing_pin_image: &'static str,
     snapshot_load_failed: &'static str,
     pin_load_failed: &'static str,
     crop_failed: &'static str,
+    copy_failed: &'static str,
+    save_failed: &'static str,
     pin_spawn_failed: &'static str,
     capture_title: &'static str,
 }
@@ -251,73 +340,103 @@ impl OverlayText {
         match language {
             OverlayLanguage::En => Self {
                 drag_hint: "Drag to select a region",
-                toolbar_hint: "Enter pin    Esc cancel    Double-click pin",
+                toolbar_hint: "Drag edges to adjust",
+                pin_action: "Pin",
+                copy_action: "Copy",
+                save_action: "Save",
                 capturing: "Capturing...",
                 missing_snapshot: "Missing screenshot snapshot",
                 missing_pin_image: "Missing pinned image path",
                 snapshot_load_failed: "Failed to load screenshot snapshot",
                 pin_load_failed: "Failed to load pinned image",
                 crop_failed: "Failed to save selected region",
+                copy_failed: "Failed to copy selected region",
+                save_failed: "Failed to save selected region",
                 pin_spawn_failed: "Failed to open pin window",
                 capture_title: "snap pin capture",
             },
             OverlayLanguage::Ja => Self {
                 drag_hint: "ドラッグして範囲を選択",
-                toolbar_hint: "Enter: ピン留め    Esc: キャンセル    ダブルクリック: ピン留め",
+                toolbar_hint: "端をドラッグして調整",
+                pin_action: "ピン留め",
+                copy_action: "コピー",
+                save_action: "保存",
                 capturing: "キャプチャ中...",
                 missing_snapshot: "スクリーンスナップショットがありません",
                 missing_pin_image: "ピン留め画像のパスがありません",
                 snapshot_load_failed: "スクリーンスナップショットの読み込みに失敗しました",
                 pin_load_failed: "ピン留め画像の読み込みに失敗しました",
                 crop_failed: "選択範囲の保存に失敗しました",
+                copy_failed: "選択範囲をコピーできませんでした",
+                save_failed: "選択範囲を保存できませんでした",
                 pin_spawn_failed: "ピンウィンドウを開けませんでした",
                 capture_title: "snap pin キャプチャ",
             },
             OverlayLanguage::Ko => Self {
                 drag_hint: "드래그하여 영역 선택",
-                toolbar_hint: "Enter 고정    Esc 취소    더블 클릭 고정",
+                toolbar_hint: "가장자리를 드래그하여 조정",
+                pin_action: "고정",
+                copy_action: "복사",
+                save_action: "저장",
                 capturing: "캡처 중...",
                 missing_snapshot: "화면 스냅샷이 없습니다",
                 missing_pin_image: "고정 이미지 경로가 없습니다",
                 snapshot_load_failed: "화면 스냅샷을 불러오지 못했습니다",
                 pin_load_failed: "고정 이미지를 불러오지 못했습니다",
                 crop_failed: "선택 영역을 저장하지 못했습니다",
+                copy_failed: "선택 영역을 복사하지 못했습니다",
+                save_failed: "선택 영역을 저장하지 못했습니다",
                 pin_spawn_failed: "고정 창을 열지 못했습니다",
                 capture_title: "snap pin 캡처",
             },
             OverlayLanguage::Fr => Self {
                 drag_hint: "Glissez pour selectionner une zone",
-                toolbar_hint: "Entree epingler    Esc annuler    Double-clic epingler",
+                toolbar_hint: "Glissez les bords pour ajuster",
+                pin_action: "Epingler",
+                copy_action: "Copier",
+                save_action: "Enregistrer",
                 capturing: "Capture...",
                 missing_snapshot: "Instantane d'ecran manquant",
                 missing_pin_image: "Chemin de l'image epinglee manquant",
                 snapshot_load_failed: "Echec du chargement de l'instantane",
                 pin_load_failed: "Echec du chargement de l'image epinglee",
                 crop_failed: "Echec de l'enregistrement de la selection",
+                copy_failed: "Echec de la copie de la selection",
+                save_failed: "Echec de l'enregistrement de la selection",
                 pin_spawn_failed: "Echec de l'ouverture de la fenetre epinglee",
                 capture_title: "capture snap pin",
             },
             OverlayLanguage::De => Self {
                 drag_hint: "Ziehen, um einen Bereich auszuwahlen",
-                toolbar_hint: "Enter anheften    Esc abbrechen    Doppelklick anheften",
+                toolbar_hint: "Kanten ziehen, um anzupassen",
+                pin_action: "Anheften",
+                copy_action: "Kopieren",
+                save_action: "Speichern",
                 capturing: "Aufnahme...",
                 missing_snapshot: "Bildschirm-Snapshot fehlt",
                 missing_pin_image: "Pfad zum angehefteten Bild fehlt",
                 snapshot_load_failed: "Bildschirm-Snapshot konnte nicht geladen werden",
                 pin_load_failed: "Angeheftetes Bild konnte nicht geladen werden",
                 crop_failed: "Auswahl konnte nicht gespeichert werden",
+                copy_failed: "Auswahl konnte nicht kopiert werden",
+                save_failed: "Auswahl konnte nicht gespeichert werden",
                 pin_spawn_failed: "Pin-Fenster konnte nicht geoffnet werden",
                 capture_title: "snap pin Aufnahme",
             },
             OverlayLanguage::ZhCn => Self {
                 drag_hint: "拖拽选择截图区域",
-                toolbar_hint: "Enter 贴图    Esc 取消    双击贴图",
+                toolbar_hint: "拖动边缘调整选区",
+                pin_action: "贴图",
+                copy_action: "复制",
+                save_action: "保存",
                 capturing: "正在截图...",
                 missing_snapshot: "缺少屏幕快照",
                 missing_pin_image: "缺少贴图图片路径",
                 snapshot_load_failed: "屏幕快照加载失败",
                 pin_load_failed: "贴图图片加载失败",
                 crop_failed: "保存选区失败",
+                copy_failed: "复制选区失败",
+                save_failed: "保存选区失败",
                 pin_spawn_failed: "打开贴图窗口失败",
                 capture_title: "贴图钉截图",
             },
@@ -353,6 +472,7 @@ fn native_options(args: &CliArgs) -> NativeOptions {
             .with_transparent(true)
             .with_always_on_top()
             .with_resizable(true)
+            .with_taskbar(false)
             .with_position([args.x, args.y])
             .with_inner_size([args.width, args.height])
             .with_min_inner_size([96.0, 72.0]),
@@ -375,8 +495,12 @@ struct CaptureOverlayApp {
     snapshot_path: Option<PathBuf>,
     snapshot_image: Option<DynamicImage>,
     snapshot_tiles: Vec<SnapshotTile>,
+    capture_regions: Vec<CaptureRegion>,
+    hovered_region: Option<EguiRect>,
     selection: Option<EguiRect>,
-    drag_start: Option<Pos2>,
+    window_hwnd: Option<isize>,
+    drag_state: Option<CaptureDragState>,
+    pending_save: Option<PendingSave>,
     status: CaptureStatus,
     last_error: Option<String>,
     created_at: Instant,
@@ -412,8 +536,15 @@ impl CaptureOverlayApp {
             snapshot_path: args.snapshot,
             snapshot_image,
             snapshot_tiles,
+            capture_regions: Vec::new(),
+            hovered_region: None,
             selection: None,
-            drag_start: None,
+            window_hwnd: creation_context
+                .window_handle()
+                .ok()
+                .and_then(|handle| hwnd_from_raw_window_handle(handle.as_raw())),
+            drag_state: None,
+            pending_save: None,
             status: if args.resident {
                 CaptureStatus::Idle
             } else {
@@ -430,31 +561,87 @@ impl CaptureOverlayApp {
         }
 
         if ctx.input(|input| input.key_pressed(Key::Enter)) {
-            self.finish_selection(ctx);
+            self.run_capture_action(ctx, CaptureAction::Pin);
+        }
+
+        if ctx.input(|input| input.modifiers.ctrl && input.key_pressed(Key::C)) {
+            self.run_capture_action(ctx, CaptureAction::Copy);
+        }
+
+        if ctx.input(|input| input.modifiers.ctrl && input.key_pressed(Key::S)) {
+            self.run_capture_action(ctx, CaptureAction::Save);
+        }
+
+        if ctx.input(|input| input.key_pressed(Key::P)) {
+            self.run_capture_action(ctx, CaptureAction::Pin);
         }
     }
 
-    fn handle_pointer(&mut self, ctx: &Context, canvas: EguiRect) {
+    fn handle_pointer(&mut self, ctx: &Context, canvas: EguiRect) -> Option<CaptureAction> {
         let pointer = ctx.input(|input| input.pointer.clone());
+
+        if self.drag_state.is_none() && self.selection.is_none() {
+            self.hovered_region = pointer
+                .interact_pos()
+                .map(|position| clamp_pos(position, canvas))
+                .and_then(|position| self.region_at(position));
+        } else if self.selection.is_some() {
+            self.hovered_region = None;
+        }
 
         if pointer.primary_pressed() {
             if let Some(position) = pointer.interact_pos() {
                 let clamped = clamp_pos(position, canvas);
-                self.drag_start = Some(clamped);
-                self.selection = Some(EguiRect::from_two_pos(clamped, clamped));
+                if let Some(selection) = self.selection {
+                    if let Some(action) = toolbar_action_at(clamped, canvas, selection, self.text) {
+                        return Some(action);
+                    }
+
+                    let mode = selection_drag_mode(selection, clamped);
+                    self.drag_state = Some(CaptureDragState {
+                        start: clamped,
+                        original: selection,
+                        mode,
+                    });
+                } else {
+                    self.drag_state = Some(CaptureDragState {
+                        start: clamped,
+                        original: EguiRect::from_two_pos(clamped, clamped),
+                        mode: CaptureDragMode::Create,
+                    });
+                    self.selection = Some(EguiRect::from_two_pos(clamped, clamped));
+                }
             }
         }
 
         if pointer.primary_down() {
-            if let (Some(start), Some(position)) = (self.drag_start, pointer.interact_pos()) {
+            if let (Some(drag), Some(position)) = (self.drag_state, pointer.interact_pos()) {
                 let clamped = clamp_pos(position, canvas);
-                self.selection = Some(EguiRect::from_two_pos(start, clamped));
+                self.selection = Some(apply_drag(drag, clamped, canvas));
             }
         }
 
         if pointer.primary_released() {
-            self.drag_start = None;
-            if let Some(selection) = self.selection {
+            let released_at = pointer
+                .interact_pos()
+                .map(|position| clamp_pos(position, canvas));
+            let was_click = match (self.drag_state, released_at) {
+                (Some(drag), Some(end)) => {
+                    drag.start.distance(end) <= CLICK_CAPTURE_MAX_DRAG_DISTANCE
+                }
+                _ => false,
+            };
+            let clicked_region = released_at.and_then(|position| self.region_at(position));
+            let drag_mode = self.drag_state.map(|drag| drag.mode);
+            self.drag_state = None;
+
+            if was_click && matches!(drag_mode, Some(CaptureDragMode::Create)) {
+                if let Some(region) = clicked_region.or(self.hovered_region) {
+                    self.selection = Some(region);
+                } else {
+                    self.selection = None;
+                }
+            } else if let Some(selection) = self.selection {
                 if selection.width() < MIN_SELECTION_SIZE || selection.height() < MIN_SELECTION_SIZE
                 {
                     self.selection = None;
@@ -467,6 +654,8 @@ impl CaptureOverlayApp {
         {
             self.dismiss(ctx);
         }
+
+        None
     }
 
     fn draw(&self, painter: &Painter, canvas: EguiRect, ctx: &Context) {
@@ -476,13 +665,10 @@ impl CaptureOverlayApp {
         if let Some(selection) = self.selection {
             draw_selection_mask(painter, canvas, selection, mask_alpha, self.border_color);
             draw_size_label(painter, selection);
-            draw_toolbar(
-                painter,
-                canvas,
-                selection,
-                self.border_color,
-                self.text.toolbar_hint,
-            );
+            draw_toolbar(painter, canvas, selection, self.border_color, self.text);
+        } else if let Some(region) = self.hovered_region {
+            draw_selection_mask(painter, canvas, region, mask_alpha, self.border_color);
+            draw_size_label(painter, region);
         } else if self.created_at.elapsed() > Duration::from_millis(160) {
             painter.rect_filled(canvas, 0.0, Color32::from_black_alpha(mask_alpha));
             draw_hint(painter, canvas, self.text.drag_hint);
@@ -522,36 +708,165 @@ impl CaptureOverlayApp {
         }
     }
 
+    fn region_at(&self, position: Pos2) -> Option<EguiRect> {
+        self.capture_regions
+            .iter()
+            .filter(|region| region.rect.contains(position))
+            .min_by(|a, b| {
+                a.rect
+                    .area()
+                    .total_cmp(&b.rect.area())
+                    .then_with(|| b.depth.cmp(&a.depth))
+            })
+            .map(|region| region.rect)
+    }
+
     fn finish_selection(&mut self, ctx: &Context) {
+        self.run_capture_action(ctx, CaptureAction::Pin);
+    }
+
+    fn run_capture_action(&mut self, ctx: &Context, action: CaptureAction) {
+        log::info!(
+            "capture action requested action={:?} status={:?} selection={:?} hwnd={:?}",
+            action,
+            self.status,
+            self.selection,
+            self.window_hwnd
+        );
         if matches!(self.status, CaptureStatus::Idle | CaptureStatus::Capturing) {
+            log::info!("capture action ignored because status={:?}", self.status);
             return;
         }
 
         let Some(selection) = self.selection else {
+            log::info!("capture action ignored because selection is empty");
             return;
         };
 
         if selection.width() < MIN_SELECTION_SIZE || selection.height() < MIN_SELECTION_SIZE {
+            log::info!(
+                "capture action ignored because selection is too small: {}x{}",
+                selection.width(),
+                selection.height()
+            );
             return;
         }
 
         self.status = CaptureStatus::Capturing;
         let region = self.screen_rect(selection);
-        match self.capture_selection_to_pin(selection, region) {
-            Ok(()) => self.dismiss(ctx),
+        if matches!(action, CaptureAction::Save) {
+            self.begin_deferred_save(ctx, selection);
+            return;
+        }
+
+        let result = match action {
+            CaptureAction::Pin => self.capture_selection_to_pin(selection, region),
+            CaptureAction::Copy => self.copy_selection_to_clipboard(selection),
+            CaptureAction::Save => unreachable!("save is handled as a deferred modal action"),
+        };
+
+        match result {
+            Ok(()) => {
+                log::info!("capture action completed action={:?}", action);
+                self.dismiss(ctx);
+            }
+            Err(error) if error == SAVE_CANCELED_CODE => {
+                log::info!("capture action canceled action={:?}", action);
+                self.status = CaptureStatus::Selecting;
+            }
             Err(error) => {
+                log::error!("capture action failed action={:?}: {}", action, error);
                 self.status = CaptureStatus::Selecting;
                 self.last_error = Some(error);
             }
         }
     }
 
+    fn begin_deferred_save(&mut self, ctx: &Context, selection: EguiRect) {
+        log::info!("deferred save scheduled selection={selection:?}");
+        self.pending_save = Some(PendingSave {
+            selection,
+            requested_at: Instant::now(),
+        });
+        ctx.request_repaint_after(Duration::from_millis(DEFERRED_SAVE_DELAY_MS));
+    }
+
+    fn run_pending_save(&mut self, ctx: &Context) {
+        let Some(pending) = self.pending_save else {
+            return;
+        };
+
+        if pending.requested_at.elapsed() < Duration::from_millis(DEFERRED_SAVE_DELAY_MS) {
+            ctx.request_repaint_after(Duration::from_millis(DEFERRED_SAVE_DELAY_MS));
+            return;
+        }
+
+        self.pending_save = None;
+        log::info!("opening save dialog hwnd={:?}", self.window_hwnd);
+        if let Some(hwnd) = self.window_hwnd {
+            platform_win32::suspend_window_for_modal_dialog(hwnd);
+        }
+
+        match self.save_selection_to_file(pending.selection) {
+            Ok(()) => {
+                log::info!("save dialog completed; dismissing capture overlay");
+                self.dismiss(ctx);
+            }
+            Err(error) if error == SAVE_CANCELED_CODE => {
+                log::info!("save dialog canceled; restoring capture overlay");
+                self.status = CaptureStatus::Selecting;
+                self.restore_capture_window(ctx);
+            }
+            Err(error) => {
+                log::error!("save dialog failed; restoring capture overlay: {}", error);
+                self.status = CaptureStatus::Selecting;
+                self.last_error = Some(error);
+                self.restore_capture_window(ctx);
+            }
+        }
+    }
+
+    fn restore_capture_window(&self, ctx: &Context) {
+        if let Some(hwnd) = self.window_hwnd {
+            platform_win32::restore_window_after_modal_dialog(hwnd, true);
+        }
+
+        if let Some(snapshot) = &self.snapshot_image {
+            let (width, height) = snapshot.dimensions();
+            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::new(
+                self.screen_origin.x,
+                self.screen_origin.y,
+            )));
+            ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(
+                width as f32,
+                height as f32,
+            )));
+        }
+
+        ctx.send_viewport_cmd(ViewportCommand::WindowLevel(WindowLevel::AlwaysOnTop));
+        ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(ViewportCommand::Focus);
+        ctx.request_repaint();
+    }
+
     fn capture_selection_to_pin(&self, selection: EguiRect, region: Rect) -> Result<(), String> {
         let Some(snapshot) = &self.snapshot_image else {
+            log::error!("pin failed: missing snapshot image");
             return Err(self.text.missing_snapshot.to_owned());
         };
 
+        log::info!(
+            "pin capture requested selection={:?} region={:?}",
+            selection,
+            region
+        );
         let cropped = crop_snapshot_to_file(snapshot, selection, &self.text)?;
+        log::info!(
+            "pin capture cropped path={} size={}x{}",
+            cropped.path.display(),
+            cropped.width,
+            cropped.height
+        );
         spawn_pin_window(
             &cropped.path,
             region.origin.x,
@@ -560,6 +875,23 @@ impl CaptureOverlayApp {
             cropped.height as f32,
         )
         .map_err(|error| format!("{}: {error}", self.text.pin_spawn_failed))
+    }
+
+    fn copy_selection_to_clipboard(&self, selection: EguiRect) -> Result<(), String> {
+        let Some(snapshot) = &self.snapshot_image else {
+            return Err(self.text.missing_snapshot.to_owned());
+        };
+
+        copy_snapshot_to_clipboard(snapshot, selection, &self.text)
+    }
+
+    fn save_selection_to_file(&self, selection: EguiRect) -> Result<(), String> {
+        let Some(snapshot) = &self.snapshot_image else {
+            log::error!("save failed: missing snapshot image");
+            return Err(self.text.missing_snapshot.to_owned());
+        };
+
+        save_snapshot_to_file(snapshot, selection, &self.text).map(|_| ())
     }
 
     fn screen_rect(&self, selection: EguiRect) -> Rect {
@@ -573,10 +905,15 @@ impl CaptureOverlayApp {
     }
 
     fn dismiss(&mut self, ctx: &Context) {
+        log::info!(
+            "dismiss capture overlay resident={} hwnd={:?}",
+            self.resident,
+            self.window_hwnd
+        );
         if self.resident {
             self.clear_capture_state();
             self.status = CaptureStatus::Idle;
-            park_resident_window(ctx);
+            park_resident_window(ctx, self.window_hwnd);
             request_resident_idle_repaint(ctx);
         } else {
             ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -587,8 +924,11 @@ impl CaptureOverlayApp {
         self.snapshot_path = None;
         self.snapshot_image = None;
         self.snapshot_tiles.clear();
+        self.capture_regions.clear();
+        self.hovered_region = None;
         self.selection = None;
-        self.drag_start = None;
+        self.drag_state = None;
+        self.pending_save = None;
         self.last_error = None;
         self.created_at = Instant::now();
     }
@@ -628,10 +968,20 @@ impl CaptureOverlayApp {
     ) -> Result<(), String> {
         if command.kind != "capture" {
             let error = format!("unknown overlay command: {}", command.kind);
+            log::error!("{error}");
             self.last_error = Some(error.clone());
             return Err(error);
         }
 
+        log::info!(
+            "capture command received snapshot={}x{} origin=({}, {}) regions={}",
+            command.snapshot.width,
+            command.snapshot.height,
+            command.snapshot.origin_x,
+            command.snapshot.origin_y,
+            command.regions.len()
+        );
+        self.pending_save = None;
         self.text = OverlayText::new(OverlayLanguage::from_code(&command.language));
         self.mask_opacity = command.mask_opacity.clamp(0.0, 0.9);
         if let Some(color) = parse_color(&command.border_color) {
@@ -640,13 +990,16 @@ impl CaptureOverlayApp {
 
         match load_shared_snapshot(ctx, &command.snapshot, self.text) {
             Ok(snapshot) => {
+                log::info!("capture snapshot loaded");
                 self.snapshot_path = None;
                 self.snapshot_image = Some(snapshot.image);
                 self.snapshot_tiles = snapshot.tiles;
+                self.capture_regions = build_capture_regions(&command.regions, &command.snapshot);
+                self.hovered_region = None;
                 self.screen_origin =
                     Point::new(command.snapshot.origin_x, command.snapshot.origin_y);
                 self.selection = None;
-                self.drag_start = None;
+                self.drag_state = None;
                 self.status = CaptureStatus::Selecting;
                 self.last_error = None;
                 self.created_at = Instant::now();
@@ -654,8 +1007,10 @@ impl CaptureOverlayApp {
                 Ok(())
             }
             Err(error) => {
+                log::error!("capture snapshot load failed: {error}");
                 self.clear_capture_state();
                 self.status = CaptureStatus::Selecting;
+                self.capture_regions = build_capture_regions(&command.regions, &command.snapshot);
                 self.screen_origin =
                     Point::new(command.snapshot.origin_x, command.snapshot.origin_y);
                 self.last_error = Some(error);
@@ -669,6 +1024,7 @@ impl CaptureOverlayApp {
 impl App for CaptureOverlayApp {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         self.drain_commands(ctx);
+        self.run_pending_save(ctx);
         if matches!(self.status, CaptureStatus::Idle) {
             if self.resident {
                 request_resident_idle_repaint(ctx);
@@ -684,10 +1040,12 @@ impl App for CaptureOverlayApp {
                 let canvas = ui.max_rect();
                 let response = ui.interact(canvas, Id::new("capture-canvas"), Sense::drag());
                 if response.double_clicked() {
-                    self.finish_selection(ctx);
+                    self.run_capture_action(ctx, CaptureAction::Pin);
                 }
 
-                self.handle_pointer(ctx, canvas);
+                if let Some(action) = self.handle_pointer(ctx, canvas) {
+                    self.run_capture_action(ctx, action);
+                }
                 self.draw(ui.painter(), canvas, ctx);
             });
     }
@@ -702,6 +1060,41 @@ enum CaptureStatus {
     Idle,
     Selecting,
     Capturing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureAction {
+    Pin,
+    Copy,
+    Save,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CaptureDragState {
+    start: Pos2,
+    original: EguiRect,
+    mode: CaptureDragMode,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingSave {
+    selection: EguiRect,
+    requested_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureDragMode {
+    Create,
+    Move,
+    Resize(ResizeEdges),
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ResizeEdges {
+    left: bool,
+    right: bool,
+    top: bool,
+    bottom: bool,
 }
 
 #[derive(Debug)]
@@ -723,9 +1116,20 @@ struct QueuedOverlayCommand {
 struct OverlayCaptureCommand {
     kind: String,
     snapshot: SharedSnapshotCommand,
+    regions: Vec<CaptureRegionCommand>,
     language: String,
     mask_opacity: f32,
     border_color: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureRegionCommand {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    depth: u8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -758,11 +1162,18 @@ struct LoadedSharedSnapshot {
     tiles: Vec<SnapshotTile>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CaptureRegion {
+    rect: EguiRect,
+    depth: u8,
+}
+
 fn start_control_server(port: u16, queue: OverlayCommandQueue, ctx: Context) {
     thread::spawn(move || {
         let listener = match TcpListener::bind(("127.0.0.1", port)) {
             Ok(listener) => listener,
             Err(error) => {
+                log::error!("failed to bind overlay control port {port}: {error}");
                 push_overlay_command(
                     &queue,
                     QueuedOverlayCommand::new(OverlayCommand::Error(format!(
@@ -773,6 +1184,7 @@ fn start_control_server(port: u16, queue: OverlayCommandQueue, ctx: Context) {
                 return;
             }
         };
+        log::info!("overlay control server listening on 127.0.0.1:{port}");
 
         for stream in listener.incoming() {
             match stream {
@@ -786,6 +1198,7 @@ fn start_control_server(port: u16, queue: OverlayCommandQueue, ctx: Context) {
                         Ok(0) => {}
                         Ok(_) => {
                             if is_supported_ping(&line) {
+                                log::info!("overlay control ping received");
                                 let _ = stream.write_all(
                                     format!(
                                         "{{\"kind\":\"pong\",\"protocol\":{CONTROL_PROTOCOL_VERSION}}}\n"
@@ -795,6 +1208,9 @@ fn start_control_server(port: u16, queue: OverlayCommandQueue, ctx: Context) {
                             } else {
                                 match serde_json::from_str::<OverlayCaptureCommand>(&line) {
                                     Ok(command) => {
+                                        log::info!(
+                                            "overlay capture command accepted by control thread"
+                                        );
                                         let (completion_tx, completion_rx) = mpsc::channel();
                                         push_overlay_command(
                                             &queue,
@@ -810,8 +1226,16 @@ fn start_control_server(port: u16, queue: OverlayCommandQueue, ctx: Context) {
                                                 COMMAND_ACK_TIMEOUT_MS,
                                             ))
                                             .unwrap_or_else(|_| {
+                                                log::error!(
+                                                    "overlay UI did not ACK capture command within {} ms",
+                                                    COMMAND_ACK_TIMEOUT_MS
+                                                );
                                                 Err("resident screenshot overlay did not process the capture command in time".to_owned())
                                             });
+                                        log::info!(
+                                            "overlay capture command ACK result={}",
+                                            if result.is_ok() { "ok" } else { "error" }
+                                        );
                                         write_control_response(&mut stream, result);
                                     }
                                     Err(error) => {
@@ -829,15 +1253,19 @@ fn start_control_server(port: u16, queue: OverlayCommandQueue, ctx: Context) {
                                 }
                             }
                         }
-                        Err(error) => push_overlay_command(
-                            &queue,
-                            QueuedOverlayCommand::new(OverlayCommand::Error(format!(
-                                "failed to read overlay command: {error}"
-                            ))),
-                        ),
+                        Err(error) => {
+                            log::error!("failed to read overlay command: {error}");
+                            push_overlay_command(
+                                &queue,
+                                QueuedOverlayCommand::new(OverlayCommand::Error(format!(
+                                    "failed to read overlay command: {error}"
+                                ))),
+                            )
+                        }
                     }
                 }
                 Err(error) => {
+                    log::error!("overlay control connection failed: {error}");
                     push_overlay_command(
                         &queue,
                         QueuedOverlayCommand::new(OverlayCommand::Error(format!(
@@ -870,6 +1298,9 @@ impl QueuedOverlayCommand {
 fn push_overlay_command(queue: &OverlayCommandQueue, command: QueuedOverlayCommand) {
     if let Ok(mut queue) = queue.lock() {
         queue.push_back(command);
+        log::info!("overlay command queued pending={}", queue.len());
+    } else {
+        log::error!("overlay command queue lock poisoned");
     }
 }
 
@@ -894,9 +1325,19 @@ fn is_supported_ping(line: &str) -> bool {
         .is_ok_and(|command| command.kind == "ping" && command.protocol == CONTROL_PROTOCOL_VERSION)
 }
 
-fn park_resident_window(ctx: &Context) {
+fn park_resident_window(ctx: &Context, hwnd: Option<isize>) {
     // Keep the resident window alive but invisible to the user. Fully hidden
     // windows may stop receiving repaint wakeups, leaving future commands queued.
+    if let Some(hwnd) = hwnd {
+        platform_win32::park_window(
+            hwnd,
+            Rect::new(
+                Point::new(RESIDENT_IDLE_X, RESIDENT_IDLE_Y),
+                Size::new(RESIDENT_IDLE_SIZE, RESIDENT_IDLE_SIZE),
+            ),
+            true,
+        );
+    }
     ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::new(
         RESIDENT_IDLE_X,
         RESIDENT_IDLE_Y,
@@ -905,6 +1346,7 @@ fn park_resident_window(ctx: &Context) {
         RESIDENT_IDLE_SIZE,
         RESIDENT_IDLE_SIZE,
     )));
+    ctx.send_viewport_cmd(ViewportCommand::WindowLevel(WindowLevel::AlwaysOnTop));
     ctx.send_viewport_cmd(ViewportCommand::Visible(true));
 }
 
@@ -913,6 +1355,7 @@ fn request_resident_idle_repaint(ctx: &Context) {
 }
 
 fn show_capture_window(ctx: &Context, snapshot: &SharedSnapshotCommand) {
+    ctx.send_viewport_cmd(ViewportCommand::WindowLevel(WindowLevel::AlwaysOnTop));
     ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::new(
         snapshot.origin_x,
         snapshot.origin_y,
@@ -924,6 +1367,48 @@ fn show_capture_window(ctx: &Context, snapshot: &SharedSnapshotCommand) {
     ctx.send_viewport_cmd(ViewportCommand::Visible(true));
     ctx.send_viewport_cmd(ViewportCommand::Focus);
     ctx.request_repaint();
+}
+
+fn hwnd_from_raw_window_handle(handle: RawWindowHandle) -> Option<isize> {
+    match handle {
+        RawWindowHandle::Win32(handle) => Some(handle.hwnd.get()),
+        _ => None,
+    }
+}
+
+fn build_capture_regions(
+    regions: &[CaptureRegionCommand],
+    snapshot: &SharedSnapshotCommand,
+) -> Vec<CaptureRegion> {
+    let canvas = EguiRect::from_min_size(
+        Pos2::ZERO,
+        Vec2::new(snapshot.width as f32, snapshot.height as f32),
+    );
+    let mut capture_regions = regions
+        .iter()
+        .filter_map(|region| {
+            let rect = EguiRect::from_min_size(
+                Pos2::new(region.x - snapshot.origin_x, region.y - snapshot.origin_y),
+                Vec2::new(region.width, region.height),
+            )
+            .intersect(canvas);
+
+            (rect.width() >= MIN_SELECTION_SIZE && rect.height() >= MIN_SELECTION_SIZE).then_some(
+                CaptureRegion {
+                    rect,
+                    depth: region.depth,
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+
+    capture_regions.sort_by(|a, b| {
+        a.rect
+            .area()
+            .total_cmp(&b.rect.area())
+            .then_with(|| b.depth.cmp(&a.depth))
+    });
+    capture_regions
 }
 
 fn load_shared_snapshot(
@@ -1025,14 +1510,9 @@ fn crop_snapshot_to_file(
     selection: EguiRect,
     text: &OverlayText,
 ) -> Result<CroppedSnapshot, String> {
-    let (snapshot_width, snapshot_height) = snapshot.dimensions();
-    let x = selection.min.x.round().clamp(0.0, snapshot_width as f32) as u32;
-    let y = selection.min.y.round().clamp(0.0, snapshot_height as f32) as u32;
-    let max_x = selection.max.x.round().clamp(0.0, snapshot_width as f32) as u32;
-    let max_y = selection.max.y.round().clamp(0.0, snapshot_height as f32) as u32;
-    let width = max_x.saturating_sub(x).max(1);
-    let height = max_y.saturating_sub(y).max(1);
-    let cropped = snapshot.crop_imm(x, y, width, height).to_rgba8();
+    let cropped = crop_snapshot(snapshot, selection);
+    let width = cropped.width();
+    let height = cropped.height();
     let image_path = std::env::temp_dir().join(format!(
         "snap_pin_capture_{}.png",
         SystemTime::now()
@@ -1051,6 +1531,73 @@ fn crop_snapshot_to_file(
     })
 }
 
+fn save_snapshot_to_file(
+    snapshot: &DynamicImage,
+    selection: EguiRect,
+    text: &OverlayText,
+) -> Result<PathBuf, String> {
+    let cropped = crop_snapshot(snapshot, selection);
+    let default_name = capture_file_name();
+    log::info!("prompting save path default_name={default_name}");
+    let Some(image_path) = platform_win32::prompt_save_png_path(&default_name)
+        .map_err(|error| format!("{}: {error}", text.save_failed))?
+    else {
+        log::info!("save path prompt canceled");
+        return Err(SAVE_CANCELED_CODE.to_owned());
+    };
+
+    log::info!("saving cropped snapshot to {}", image_path.display());
+    if let Some(parent) = image_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("{}: {error}", text.save_failed))?;
+    }
+
+    cropped
+        .save(&image_path)
+        .map_err(|error| format!("{}: {error}", text.save_failed))?;
+    log::info!("saved cropped snapshot to {}", image_path.display());
+    Ok(image_path)
+}
+
+fn copy_snapshot_to_clipboard(
+    snapshot: &DynamicImage,
+    selection: EguiRect,
+    text: &OverlayText,
+) -> Result<(), String> {
+    let cropped = crop_snapshot(snapshot, selection);
+    let image = arboard::ImageData {
+        width: cropped.width() as usize,
+        height: cropped.height() as usize,
+        bytes: Cow::Owned(cropped.into_raw()),
+    };
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|error| format!("{}: {error}", text.copy_failed))?;
+    clipboard
+        .set_image(image)
+        .map_err(|error| format!("{}: {error}", text.copy_failed))
+}
+
+fn crop_snapshot(snapshot: &DynamicImage, selection: EguiRect) -> image::RgbaImage {
+    let (snapshot_width, snapshot_height) = snapshot.dimensions();
+    let x = selection.min.x.round().clamp(0.0, snapshot_width as f32) as u32;
+    let y = selection.min.y.round().clamp(0.0, snapshot_height as f32) as u32;
+    let max_x = selection.max.x.round().clamp(0.0, snapshot_width as f32) as u32;
+    let max_y = selection.max.y.round().clamp(0.0, snapshot_height as f32) as u32;
+    let width = max_x.saturating_sub(x).max(1);
+    let height = max_y.saturating_sub(y).max(1);
+    snapshot.crop_imm(x, y, width, height).to_rgba8()
+}
+
+fn capture_file_name() -> String {
+    format!(
+        "snap_pin_capture_{}.png",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or_default()
+    )
+}
+
 fn spawn_pin_window(
     image_path: &PathBuf,
     x: f32,
@@ -1059,20 +1606,30 @@ fn spawn_pin_window(
     height: f32,
 ) -> Result<(), String> {
     let current_exe = std::env::current_exe().map_err(|error| error.to_string())?;
-    std::process::Command::new(current_exe)
+    log::info!(
+        "spawning pin window exe={} image={} x={} y={} width={} height={}",
+        current_exe.display(),
+        image_path.display(),
+        x,
+        y,
+        width,
+        height
+    );
+    let child = std::process::Command::new(current_exe)
         .arg("--pin")
         .arg("--image")
         .arg(image_path)
         .arg("--x")
-        .arg(format!("{}", x + 16.0))
+        .arg(format!("{}", x))
         .arg("--y")
-        .arg(format!("{}", y + 16.0))
+        .arg(format!("{}", y))
         .arg("--width")
         .arg(format!("{}", width))
         .arg("--height")
         .arg(format!("{}", height))
         .spawn()
         .map_err(|error| error.to_string())?;
+    log::info!("pin window spawned pid={}", child.id());
     Ok(())
 }
 
@@ -1103,10 +1660,12 @@ impl PinWindowApp {
 
     fn load_texture(&mut self, ctx: &Context) {
         let Some(path) = &self.image_path else {
+            log::error!("pin window missing image path");
             self.error = Some(self.text.missing_pin_image.to_owned());
             return;
         };
 
+        log::info!("pin window loading image {}", path.display());
         match image::open(path) {
             Ok(image) => {
                 let image = image.to_rgba8();
@@ -1117,8 +1676,15 @@ impl PinWindowApp {
                     ColorImage::from_rgba_unmultiplied(size, image.as_raw()),
                     TextureOptions::LINEAR,
                 ));
+                log::info!("pin window image loaded size={}x{}", size[0], size[1]);
             }
-            Err(error) => self.error = Some(format!("{}: {error}", self.text.pin_load_failed)),
+            Err(error) => {
+                log::error!(
+                    "pin window failed to load image {}: {error}",
+                    path.display()
+                );
+                self.error = Some(format!("{}: {error}", self.text.pin_load_failed));
+            }
         }
     }
 
@@ -1178,6 +1744,96 @@ fn clamp_pos(pos: Pos2, rect: EguiRect) -> Pos2 {
     )
 }
 
+fn selection_drag_mode(selection: EguiRect, position: Pos2) -> CaptureDragMode {
+    let near_left = (position.x - selection.min.x).abs() <= SELECTION_EDGE_HIT_SIZE;
+    let near_right = (position.x - selection.max.x).abs() <= SELECTION_EDGE_HIT_SIZE;
+    let near_top = (position.y - selection.min.y).abs() <= SELECTION_EDGE_HIT_SIZE;
+    let near_bottom = (position.y - selection.max.y).abs() <= SELECTION_EDGE_HIT_SIZE;
+    let edges = ResizeEdges {
+        left: near_left,
+        right: near_right,
+        top: near_top,
+        bottom: near_bottom,
+    };
+
+    if edges.left || edges.right || edges.top || edges.bottom {
+        CaptureDragMode::Resize(edges)
+    } else if selection.contains(position) {
+        CaptureDragMode::Move
+    } else {
+        CaptureDragMode::Create
+    }
+}
+
+fn apply_drag(drag: CaptureDragState, position: Pos2, canvas: EguiRect) -> EguiRect {
+    match drag.mode {
+        CaptureDragMode::Create => normalize_selection(EguiRect::from_two_pos(
+            drag.start,
+            clamp_pos(position, canvas),
+        )),
+        CaptureDragMode::Move => {
+            let delta = position - drag.start;
+            let mut rect = drag.original.translate(delta);
+            if rect.min.x < canvas.min.x {
+                rect = rect.translate(Vec2::new(canvas.min.x - rect.min.x, 0.0));
+            }
+            if rect.min.y < canvas.min.y {
+                rect = rect.translate(Vec2::new(0.0, canvas.min.y - rect.min.y));
+            }
+            if rect.max.x > canvas.max.x {
+                rect = rect.translate(Vec2::new(canvas.max.x - rect.max.x, 0.0));
+            }
+            if rect.max.y > canvas.max.y {
+                rect = rect.translate(Vec2::new(0.0, canvas.max.y - rect.max.y));
+            }
+            rect
+        }
+        CaptureDragMode::Resize(edges) => resize_selection(drag.original, position, canvas, edges),
+    }
+}
+
+fn resize_selection(
+    selection: EguiRect,
+    position: Pos2,
+    canvas: EguiRect,
+    edges: ResizeEdges,
+) -> EguiRect {
+    let position = clamp_pos(position, canvas);
+    let mut min = selection.min;
+    let mut max = selection.max;
+
+    if edges.left {
+        min.x = position.x.min(max.x - SELECTION_MIN_SIZE);
+    }
+    if edges.right {
+        max.x = position.x.max(min.x + SELECTION_MIN_SIZE);
+    }
+    if edges.top {
+        min.y = position.y.min(max.y - SELECTION_MIN_SIZE);
+    }
+    if edges.bottom {
+        max.y = position.y.max(min.y + SELECTION_MIN_SIZE);
+    }
+
+    normalize_selection(EguiRect::from_min_max(
+        clamp_pos(min, canvas),
+        clamp_pos(max, canvas),
+    ))
+}
+
+fn normalize_selection(selection: EguiRect) -> EguiRect {
+    EguiRect::from_min_max(
+        Pos2::new(
+            selection.min.x.min(selection.max.x),
+            selection.min.y.min(selection.max.y),
+        ),
+        Pos2::new(
+            selection.min.x.max(selection.max.x),
+            selection.min.y.max(selection.max.y),
+        ),
+    )
+}
+
 fn draw_selection_mask(
     painter: &Painter,
     canvas: EguiRect,
@@ -1191,6 +1847,7 @@ fn draw_selection_mask(
         Stroke::new(2.0, border_color),
         StrokeKind::Outside,
     );
+    draw_resize_handles(painter, selection, border_color);
 
     let shade = Color32::from_black_alpha(mask_alpha);
     let top = EguiRect::from_min_max(canvas.min, Pos2::new(canvas.max.x, selection.min.y));
@@ -1206,6 +1863,30 @@ fn draw_selection_mask(
 
     for rect in [top, bottom, left, right] {
         painter.rect_filled(rect, 0.0, shade);
+    }
+}
+
+fn draw_resize_handles(painter: &Painter, selection: EguiRect, border_color: Color32) {
+    let handles = [
+        selection.left_top(),
+        Pos2::new(selection.center().x, selection.top()),
+        selection.right_top(),
+        Pos2::new(selection.right(), selection.center().y),
+        selection.right_bottom(),
+        Pos2::new(selection.center().x, selection.bottom()),
+        selection.left_bottom(),
+        Pos2::new(selection.left(), selection.center().y),
+    ];
+
+    for center in handles {
+        let rect = EguiRect::from_center_size(center, Vec2::splat(7.0));
+        painter.rect_filled(rect, 2.0, Color32::from_black_alpha(180));
+        painter.rect_stroke(
+            rect,
+            CornerRadius::same(2),
+            Stroke::new(1.0, border_color),
+            StrokeKind::Outside,
+        );
     }
 }
 
@@ -1232,10 +1913,50 @@ fn draw_toolbar(
     canvas: EguiRect,
     selection: EguiRect,
     border_color: Color32,
-    text: &str,
+    text: OverlayText,
 ) {
-    let width = (text.chars().count() as f32 * 7.2 + 28.0).clamp(194.0, 440.0);
-    let size = Vec2::new(width, 32.0);
+    let toolbar = toolbar_rect(canvas, selection, text);
+    painter.rect_filled(toolbar, 6.0, Color32::from_black_alpha(220));
+    painter.rect_stroke(
+        toolbar,
+        CornerRadius::same(6),
+        Stroke::new(1.0, border_color.gamma_multiply(0.7)),
+        StrokeKind::Outside,
+    );
+
+    for button in toolbar_buttons(toolbar, text) {
+        painter.rect_filled(button.rect, 4.0, Color32::from_white_alpha(18));
+        painter.rect_stroke(
+            button.rect,
+            CornerRadius::same(4),
+            Stroke::new(1.0, Color32::from_white_alpha(36)),
+            StrokeKind::Inside,
+        );
+        painter.text(
+            button.rect.center(),
+            Align2::CENTER_CENTER,
+            button.label,
+            FontId::proportional(12.0),
+            Color32::WHITE,
+        );
+    }
+}
+
+fn toolbar_action_at(
+    position: Pos2,
+    canvas: EguiRect,
+    selection: EguiRect,
+    text: OverlayText,
+) -> Option<CaptureAction> {
+    toolbar_buttons(toolbar_rect(canvas, selection, text), text)
+        .into_iter()
+        .find(|button| button.rect.contains(position))
+        .map(|button| button.action)
+}
+
+fn toolbar_rect(canvas: EguiRect, selection: EguiRect, text: OverlayText) -> EguiRect {
+    let width = toolbar_width(text);
+    let size = Vec2::new(width, 34.0);
     let x = (selection.max.x - size.x).clamp(canvas.min.x + 8.0, canvas.max.x - size.x - 8.0);
     let y = if selection.max.y + size.y + 10.0 <= canvas.max.y {
         selection.max.y + 8.0
@@ -1243,22 +1964,47 @@ fn draw_toolbar(
         selection.min.y - size.y - 8.0
     }
     .clamp(canvas.min.y + 8.0, canvas.max.y - size.y - 8.0);
-    let position = Pos2::new(x, y);
-    let rect = EguiRect::from_min_size(position, size);
-    painter.rect_filled(rect, 6.0, Color32::from_black_alpha(210));
-    painter.rect_stroke(
-        rect,
-        CornerRadius::same(6),
-        Stroke::new(1.0, border_color.gamma_multiply(0.7)),
-        StrokeKind::Outside,
-    );
-    painter.text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        text,
-        FontId::proportional(12.0),
-        Color32::WHITE,
-    );
+    EguiRect::from_min_size(Pos2::new(x, y), size)
+}
+
+fn toolbar_width(text: OverlayText) -> f32 {
+    let labels = [text.pin_action, text.copy_action, text.save_action];
+    labels.iter().map(|label| button_width(label)).sum::<f32>() + 20.0
+}
+
+fn button_width(label: &str) -> f32 {
+    (label.chars().count() as f32 * 12.0 + 24.0).clamp(52.0, 118.0)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ToolbarButton {
+    rect: EguiRect,
+    label: &'static str,
+    action: CaptureAction,
+}
+
+fn toolbar_buttons(toolbar: EguiRect, text: OverlayText) -> Vec<ToolbarButton> {
+    let mut x = toolbar.min.x + 6.0;
+    [
+        (text.pin_action, CaptureAction::Pin),
+        (text.copy_action, CaptureAction::Copy),
+        (text.save_action, CaptureAction::Save),
+    ]
+    .into_iter()
+    .map(|(label, action)| {
+        let width = button_width(label);
+        let rect = EguiRect::from_min_size(
+            Pos2::new(x, toolbar.min.y + 5.0),
+            Vec2::new(width, toolbar.height() - 10.0),
+        );
+        x += width + 4.0;
+        ToolbarButton {
+            rect,
+            label,
+            action,
+        }
+    })
+    .collect()
 }
 
 fn draw_hint(painter: &Painter, canvas: EguiRect, text: &str) {
