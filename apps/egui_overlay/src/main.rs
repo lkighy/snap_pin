@@ -48,6 +48,7 @@ const SELECTION_MIN_SIZE: f32 = 12.0;
 const DEFERRED_SAVE_DELAY_MS: u64 = 80;
 const SAVE_CANCELED_CODE: &str = "save_canceled";
 const OVERLAY_LOG_FILE_NAME: &str = "snap_pin_overlay.log";
+const MAGNIFIER_SAMPLE_SIZE: i32 = 17;
 
 static OVERLAY_LOGGER: OverlayFileLogger = OverlayFileLogger {
     file: OnceLock::new(),
@@ -207,6 +208,8 @@ struct CliArgs {
     include_cursor: bool,
     mask_opacity: f32,
     border_color: Color32,
+    show_magnifier: bool,
+    magnifier_scale: f32,
     resident: bool,
     control_port: u16,
 }
@@ -226,6 +229,8 @@ impl CliArgs {
             include_cursor: false,
             mask_opacity: 0.46,
             border_color: Color32::from_rgb(47, 138, 163),
+            show_magnifier: true,
+            magnifier_scale: 2.0,
             resident: false,
             control_port: 47232,
         };
@@ -258,11 +263,18 @@ impl CliArgs {
                         parsed.border_color = color;
                     }
                 }
+                "--show-magnifier" => {
+                    parsed.show_magnifier = parse_next(&mut args, parsed.show_magnifier)
+                }
+                "--magnifier-scale" => {
+                    parsed.magnifier_scale = parse_next(&mut args, parsed.magnifier_scale)
+                }
                 _ => {}
             }
         }
 
         parsed.mask_opacity = parsed.mask_opacity.clamp(0.0, 0.9);
+        parsed.magnifier_scale = parsed.magnifier_scale.clamp(1.0, 6.0);
         parsed.width = parsed.width.max(64.0);
         parsed.height = parsed.height.max(64.0);
         parsed
@@ -496,6 +508,8 @@ struct CaptureOverlayApp {
     screen_origin: Point,
     mask_opacity: f32,
     border_color: Color32,
+    show_magnifier: bool,
+    magnifier_scale: f32,
     resident: bool,
     command_queue: Option<OverlayCommandQueue>,
     snapshot_path: Option<PathBuf>,
@@ -508,6 +522,8 @@ struct CaptureOverlayApp {
     drag_state: Option<CaptureDragState>,
     pending_save: Option<PendingSave>,
     status: CaptureStatus,
+    color_format: ColorValueFormat,
+    shift_down_last_frame: bool,
     last_error: Option<String>,
     created_at: Instant,
 }
@@ -537,6 +553,8 @@ impl CaptureOverlayApp {
             screen_origin: Point::new(args.x, args.y),
             mask_opacity: args.mask_opacity,
             border_color: args.border_color,
+            show_magnifier: args.show_magnifier,
+            magnifier_scale: args.magnifier_scale,
             resident: args.resident,
             command_queue,
             snapshot_path: args.snapshot,
@@ -556,9 +574,19 @@ impl CaptureOverlayApp {
             } else {
                 CaptureStatus::Selecting
             },
+            color_format: ColorValueFormat::Hex,
+            shift_down_last_frame: false,
             last_error,
             created_at: Instant::now(),
         }
+    }
+
+    fn update_color_format_toggle(&mut self, ctx: &Context) {
+        let shift_down = ctx.input(|input| input.modifiers.shift);
+        if shift_down && !self.shift_down_last_frame {
+            self.color_format = self.color_format.toggled();
+        }
+        self.shift_down_last_frame = shift_down;
     }
 
     fn handle_shortcuts(&mut self, ctx: &Context) {
@@ -580,6 +608,17 @@ impl CaptureOverlayApp {
 
         if ctx.input(|input| input.key_pressed(Key::P)) {
             self.run_capture_action(ctx, CaptureAction::Pin);
+        }
+    }
+
+    fn handle_color_shortcuts(&mut self, ctx: &Context, canvas: EguiRect) {
+        if ctx.input(|input| {
+            input.key_pressed(Key::C)
+                && !input.modifiers.ctrl
+                && !input.modifiers.command
+                && !input.modifiers.alt
+        }) {
+            self.copy_hovered_color(ctx, canvas);
         }
     }
 
@@ -667,6 +706,7 @@ impl CaptureOverlayApp {
     fn draw(&self, painter: &Painter, canvas: EguiRect, ctx: &Context) {
         let mask_alpha = (self.mask_opacity * 255.0).round() as u8;
         self.draw_snapshot(painter, canvas);
+        let hovered_pixel = self.hovered_pixel(ctx, canvas);
 
         if let Some(selection) = self.selection {
             draw_selection_mask(painter, canvas, selection, mask_alpha, self.border_color);
@@ -684,6 +724,19 @@ impl CaptureOverlayApp {
 
         if let Some(error) = &self.last_error {
             draw_error(painter, canvas, error);
+        }
+
+        if self.show_magnifier {
+            if let Some(pixel) = hovered_pixel {
+                draw_magnifier(
+                    painter,
+                    canvas,
+                    &self.snapshot_image,
+                    pixel,
+                    self.magnifier_scale,
+                    self.color_format,
+                );
+            }
         }
 
         if matches!(self.status, CaptureStatus::Capturing) {
@@ -725,6 +778,37 @@ impl CaptureOverlayApp {
                     .then_with(|| b.depth.cmp(&a.depth))
             })
             .map(|region| region.rect)
+    }
+
+    fn hovered_pixel(&self, ctx: &Context, canvas: EguiRect) -> Option<PointerPixel> {
+        let position = ctx.input(|input| input.pointer.hover_pos())?;
+        if !canvas.contains(position) {
+            return None;
+        }
+
+        pointer_pixel_at(
+            self.snapshot_image.as_ref()?,
+            position,
+            canvas,
+            self.screen_origin,
+        )
+    }
+
+    fn copy_hovered_color(&mut self, ctx: &Context, canvas: EguiRect) {
+        let Some(pixel) = self.hovered_pixel(ctx, canvas) else {
+            return;
+        };
+
+        let value = format_color_value(pixel.color, self.color_format);
+        match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(value.clone()))
+        {
+            Ok(()) => log::info!("copied hovered color {value}"),
+            Err(error) => {
+                let message = format!("failed to copy color: {error}");
+                log::error!("{message}");
+                self.last_error = Some(message);
+            }
+        }
     }
 
     fn finish_selection(&mut self, ctx: &Context) {
@@ -990,6 +1074,8 @@ impl CaptureOverlayApp {
         self.pending_save = None;
         self.text = OverlayText::new(OverlayLanguage::from_code(&command.language));
         self.mask_opacity = command.mask_opacity.clamp(0.0, 0.9);
+        self.show_magnifier = command.show_magnifier;
+        self.magnifier_scale = command.magnifier_scale.clamp(1.0, 6.0);
         if let Some(color) = parse_color(&command.border_color) {
             self.border_color = color;
         }
@@ -1007,6 +1093,8 @@ impl CaptureOverlayApp {
                 self.selection = None;
                 self.drag_state = None;
                 self.status = CaptureStatus::Selecting;
+                self.color_format = ColorValueFormat::Hex;
+                self.shift_down_last_frame = false;
                 self.last_error = None;
                 self.created_at = Instant::now();
                 show_capture_window(ctx, &command.snapshot);
@@ -1039,6 +1127,7 @@ impl App for CaptureOverlayApp {
         }
 
         self.handle_shortcuts(ctx);
+        self.update_color_format_toggle(ctx);
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -1049,6 +1138,7 @@ impl App for CaptureOverlayApp {
                     self.run_capture_action(ctx, CaptureAction::Pin);
                 }
 
+                self.handle_color_shortcuts(ctx, canvas);
                 if let Some(action) = self.handle_pointer(ctx, canvas) {
                     self.run_capture_action(ctx, action);
                 }
@@ -1075,6 +1165,21 @@ enum CaptureAction {
     Save,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColorValueFormat {
+    Hex,
+    Rgb,
+}
+
+impl ColorValueFormat {
+    fn toggled(self) -> Self {
+        match self {
+            Self::Hex => Self::Rgb,
+            Self::Rgb => Self::Hex,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct CaptureDragState {
     start: Pos2,
@@ -1086,6 +1191,16 @@ struct CaptureDragState {
 struct PendingSave {
     selection: EguiRect,
     requested_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PointerPixel {
+    position: Pos2,
+    image_x: u32,
+    image_y: u32,
+    screen_x: i32,
+    screen_y: i32,
+    color: Color32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1126,6 +1241,18 @@ struct OverlayCaptureCommand {
     language: String,
     mask_opacity: f32,
     border_color: String,
+    #[serde(default = "default_show_magnifier")]
+    show_magnifier: bool,
+    #[serde(default = "default_magnifier_scale")]
+    magnifier_scale: f32,
+}
+
+fn default_show_magnifier() -> bool {
+    true
+}
+
+fn default_magnifier_scale() -> f32 {
+    2.0
 }
 
 #[derive(Debug, Deserialize)]
@@ -1840,6 +1967,45 @@ fn normalize_selection(selection: EguiRect) -> EguiRect {
     )
 }
 
+fn pointer_pixel_at(
+    snapshot: &DynamicImage,
+    position: Pos2,
+    canvas: EguiRect,
+    screen_origin: Point,
+) -> Option<PointerPixel> {
+    let (width, height) = snapshot.dimensions();
+    if width == 0 || height == 0 || canvas.width() <= 0.0 || canvas.height() <= 0.0 {
+        return None;
+    }
+
+    let local_x = ((position.x - canvas.min.x) / canvas.width()).clamp(0.0, 1.0);
+    let local_y = ((position.y - canvas.min.y) / canvas.height()).clamp(0.0, 1.0);
+    let image_x = (local_x * (width.saturating_sub(1) as f32)).round() as u32;
+    let image_y = (local_y * (height.saturating_sub(1) as f32)).round() as u32;
+    let color = snapshot_color_at(snapshot, image_x, image_y);
+
+    Some(PointerPixel {
+        position,
+        image_x,
+        image_y,
+        screen_x: (screen_origin.x + image_x as f32).round() as i32,
+        screen_y: (screen_origin.y + image_y as f32).round() as i32,
+        color,
+    })
+}
+
+fn snapshot_color_at(snapshot: &DynamicImage, x: u32, y: u32) -> Color32 {
+    let pixel = snapshot.get_pixel(x, y).0;
+    Color32::from_rgb(pixel[0], pixel[1], pixel[2])
+}
+
+fn format_color_value(color: Color32, format: ColorValueFormat) -> String {
+    match format {
+        ColorValueFormat::Hex => format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b()),
+        ColorValueFormat::Rgb => format!("rgb({}, {}, {})", color.r(), color.g(), color.b()),
+    }
+}
+
 fn draw_selection_mask(
     painter: &Painter,
     canvas: EguiRect,
@@ -1912,6 +2078,115 @@ fn draw_size_label(painter: &Painter, selection: EguiRect) {
         FontId::monospace(12.0),
         Color32::WHITE,
     );
+}
+
+fn draw_magnifier(
+    painter: &Painter,
+    canvas: EguiRect,
+    snapshot: &Option<DynamicImage>,
+    pixel: PointerPixel,
+    scale: f32,
+    color_format: ColorValueFormat,
+) {
+    let Some(snapshot) = snapshot.as_ref() else {
+        return;
+    };
+
+    let cell_size = (scale * 4.0).clamp(4.0, 14.0);
+    let sample_size = MAGNIFIER_SAMPLE_SIZE.max(3);
+    let radius = sample_size / 2;
+    let zoom_size = sample_size as f32 * cell_size;
+    let panel_size = Vec2::new((zoom_size + 16.0).max(188.0), zoom_size + 72.0);
+    let panel = floating_panel_rect(canvas, pixel.position, panel_size);
+    let image_origin = Pos2::new(panel.center().x - zoom_size / 2.0, panel.min.y + 8.0);
+    let image_rect = EguiRect::from_min_size(image_origin, Vec2::splat(zoom_size));
+
+    painter.rect_filled(panel, 6.0, Color32::from_black_alpha(228));
+    painter.rect_stroke(
+        panel,
+        CornerRadius::same(6),
+        Stroke::new(1.0, Color32::from_white_alpha(40)),
+        StrokeKind::Outside,
+    );
+
+    let max_x = snapshot.width().saturating_sub(1) as i32;
+    let max_y = snapshot.height().saturating_sub(1) as i32;
+    for row in 0..sample_size {
+        for column in 0..sample_size {
+            let image_x = (pixel.image_x as i32 + column - radius).clamp(0, max_x) as u32;
+            let image_y = (pixel.image_y as i32 + row - radius).clamp(0, max_y) as u32;
+            let color = snapshot_color_at(snapshot, image_x, image_y);
+            let rect = EguiRect::from_min_size(
+                image_rect.min + Vec2::new(column as f32 * cell_size, row as f32 * cell_size),
+                Vec2::splat(cell_size + 0.5),
+            );
+            painter.rect_filled(rect, 0.0, color);
+        }
+    }
+
+    let center_rect = EguiRect::from_min_size(
+        image_rect.min + Vec2::new(radius as f32 * cell_size, radius as f32 * cell_size),
+        Vec2::splat(cell_size),
+    );
+    painter.rect_stroke(
+        center_rect.expand(1.0),
+        CornerRadius::ZERO,
+        Stroke::new(2.0, Color32::BLACK),
+        StrokeKind::Outside,
+    );
+    painter.rect_stroke(
+        center_rect,
+        CornerRadius::ZERO,
+        Stroke::new(2.0, Color32::WHITE),
+        StrokeKind::Inside,
+    );
+
+    let info_top = image_rect.max.y + 9.0;
+    let swatch =
+        EguiRect::from_min_size(Pos2::new(panel.min.x + 10.0, info_top), Vec2::splat(28.0));
+    painter.rect_filled(swatch, 4.0, pixel.color);
+    painter.rect_stroke(
+        swatch,
+        CornerRadius::same(4),
+        Stroke::new(1.0, Color32::from_white_alpha(90)),
+        StrokeKind::Outside,
+    );
+
+    let text_x = swatch.max.x + 9.0;
+    painter.text(
+        Pos2::new(text_x, info_top - 1.0),
+        Align2::LEFT_TOP,
+        format!("X {}  Y {}", pixel.screen_x, pixel.screen_y),
+        FontId::monospace(12.0),
+        Color32::from_white_alpha(225),
+    );
+    painter.text(
+        Pos2::new(text_x, info_top + 17.0),
+        Align2::LEFT_TOP,
+        format_color_value(pixel.color, color_format),
+        FontId::monospace(12.0),
+        Color32::WHITE,
+    );
+}
+
+fn floating_panel_rect(canvas: EguiRect, cursor: Pos2, size: Vec2) -> EguiRect {
+    let margin = 8.0;
+    let mut min = cursor + Vec2::new(24.0, 24.0);
+    if min.x + size.x > canvas.max.x - margin {
+        min.x = cursor.x - size.x - 18.0;
+    }
+    if min.y + size.y > canvas.max.y - margin {
+        min.y = cursor.y - size.y - 18.0;
+    }
+
+    let min_x = canvas.min.x + margin;
+    let min_y = canvas.min.y + margin;
+    let max_x = (canvas.max.x - size.x - margin).max(min_x);
+    let max_y = (canvas.max.y - size.y - margin).max(min_y);
+    EguiRect::from_min_size(
+        Pos2::new(min.x.clamp(min_x, max_x), min.y.clamp(min_y, max_y)),
+        size,
+    )
 }
 
 fn draw_toolbar(

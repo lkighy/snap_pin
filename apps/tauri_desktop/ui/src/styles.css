@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+    --background: 198 24% 96%;
+    --foreground: 215 24% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 215 24% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 24% 12%;
+    --primary: 187 68% 28%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 22% 92%;
+    --secondary-foreground: 215 24% 16%;
+    --muted: 200 21% 91%;
+    --muted-foreground: 205 12% 42%;
+    --accent: 176 32% 89%;
+    --accent-foreground: 187 66% 19%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 200 18% 82%;
+    --input: 200 18% 76%;
+    --ring: 187 68% 34%;
+    --radius: 0.5rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply m-0 bg-background text-foreground antialiased;
+    font-family:
+      Inter, "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont,
+      sans-serif;
+  }
+
+  button,
+  input,
+  select {
+    font: inherit;
+  }
+}
+
+@layer components {
+  .accented-range {
+    @apply h-9 w-full cursor-pointer appearance-none bg-transparent;
+  }
+
+  .accented-range::-webkit-slider-runnable-track {
+    @apply h-2 rounded-full bg-muted;
+  }
+
+  .accented-range::-webkit-slider-thumb {
+    @apply mt-[-5px] size-4 appearance-none rounded-full border-2 border-primary bg-background shadow-sm;
+  }
+
+  .accented-range:focus-visible {
+    @apply outline-none ring-2 ring-ring;
+  }
+}

@@ -1,0 +1,7 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Snap Pin Desktop With UI" type="CompoundRunConfigurationType">
+    <toRun name="Snap Pin UI Dev Server" type="js.build_tools.npm" />
+    <toRun name="Snap Pin Desktop" type="CargoCommandRunConfiguration" />
+    <method v="2" />
+  </configuration>
+</component>
