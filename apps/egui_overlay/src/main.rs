@@ -21,9 +21,10 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use eframe::egui::{
-    self, Align2, Color32, ColorImage, Context, CornerRadius, FontData, FontDefinitions,
-    FontFamily, FontId, Id, Key, LayerId, Order, Painter, Pos2, Rect as EguiRect, Sense, Stroke,
-    StrokeKind, TextureHandle, TextureOptions, Vec2, ViewportBuilder, ViewportCommand, WindowLevel,
+    self, Align2, Color32, ColorImage, Context, CornerRadius, Event, FontData, FontDefinitions,
+    FontFamily, FontId, Id, InputState, Key, LayerId, Order, Painter, Pos2, Rect as EguiRect,
+    Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Vec2, ViewportBuilder,
+    ViewportCommand, WindowLevel,
 };
 use eframe::{App, CreationContext, Frame, NativeOptions};
 use image::{DynamicImage, GenericImageView};
@@ -210,6 +211,7 @@ struct CliArgs {
     border_color: Color32,
     show_magnifier: bool,
     magnifier_scale: f32,
+    pin_hotkey: String,
     resident: bool,
     control_port: u16,
 }
@@ -231,6 +233,7 @@ impl CliArgs {
             border_color: Color32::from_rgb(47, 138, 163),
             show_magnifier: true,
             magnifier_scale: 2.0,
+            pin_hotkey: "Ctrl+Shift+X".to_owned(),
             resident: false,
             control_port: 47232,
         };
@@ -269,6 +272,7 @@ impl CliArgs {
                 "--magnifier-scale" => {
                     parsed.magnifier_scale = parse_next(&mut args, parsed.magnifier_scale)
                 }
+                "--pin-hotkey" => parsed.pin_hotkey = parse_next(&mut args, parsed.pin_hotkey),
                 _ => {}
             }
         }
@@ -510,6 +514,7 @@ struct CaptureOverlayApp {
     border_color: Color32,
     show_magnifier: bool,
     magnifier_scale: f32,
+    pin_hotkey: String,
     resident: bool,
     command_queue: Option<OverlayCommandQueue>,
     snapshot_path: Option<PathBuf>,
@@ -555,6 +560,7 @@ impl CaptureOverlayApp {
             border_color: args.border_color,
             show_magnifier: args.show_magnifier,
             magnifier_scale: args.magnifier_scale,
+            pin_hotkey: args.pin_hotkey,
             resident: args.resident,
             command_queue,
             snapshot_path: args.snapshot,
@@ -592,21 +598,25 @@ impl CaptureOverlayApp {
     fn handle_shortcuts(&mut self, ctx: &Context) {
         if ctx.input(|input| input.key_pressed(Key::Escape)) {
             self.dismiss(ctx);
+            return;
         }
 
-        if ctx.input(|input| input.key_pressed(Key::Enter)) {
+        if ctx.input(|input| hotkey_pressed(input, &self.pin_hotkey)) {
             self.run_capture_action(ctx, CaptureAction::Pin);
+            return;
         }
 
-        if ctx.input(|input| input.modifiers.ctrl && input.key_pressed(Key::C)) {
+        if ctx.input(copy_shortcut_pressed) {
             self.run_capture_action(ctx, CaptureAction::Copy);
+            return;
         }
 
-        if ctx.input(|input| input.modifiers.ctrl && input.key_pressed(Key::S)) {
+        if ctx.input(|input| command_shortcut_pressed(input, Key::S)) {
             self.run_capture_action(ctx, CaptureAction::Save);
+            return;
         }
 
-        if ctx.input(|input| input.key_pressed(Key::P)) {
+        if ctx.input(|input| input.key_pressed(Key::Enter) || input.key_pressed(Key::P)) {
             self.run_capture_action(ctx, CaptureAction::Pin);
         }
     }
@@ -802,7 +812,10 @@ impl CaptureOverlayApp {
         let value = format_color_value(pixel.color, self.color_format);
         match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(value.clone()))
         {
-            Ok(()) => log::info!("copied hovered color {value}"),
+            Ok(()) => {
+                log::info!("copied hovered color {value}; dismissing capture overlay");
+                self.dismiss(ctx);
+            }
             Err(error) => {
                 let message = format!("failed to copy color: {error}");
                 log::error!("{message}");
@@ -1076,6 +1089,7 @@ impl CaptureOverlayApp {
         self.mask_opacity = command.mask_opacity.clamp(0.0, 0.9);
         self.show_magnifier = command.show_magnifier;
         self.magnifier_scale = command.magnifier_scale.clamp(1.0, 6.0);
+        self.pin_hotkey = command.pin_hotkey;
         if let Some(color) = parse_color(&command.border_color) {
             self.border_color = color;
         }
@@ -1204,6 +1218,15 @@ struct PointerPixel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OverlayHotkey {
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    command: bool,
+    key: Key,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CaptureDragMode {
     Create,
     Move,
@@ -1245,6 +1268,8 @@ struct OverlayCaptureCommand {
     show_magnifier: bool,
     #[serde(default = "default_magnifier_scale")]
     magnifier_scale: f32,
+    #[serde(default = "default_pin_hotkey")]
+    pin_hotkey: String,
 }
 
 fn default_show_magnifier() -> bool {
@@ -1253,6 +1278,10 @@ fn default_show_magnifier() -> bool {
 
 fn default_magnifier_scale() -> f32 {
     2.0
+}
+
+fn default_pin_hotkey() -> String {
+    "Ctrl+Shift+X".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
@@ -2002,7 +2031,173 @@ fn snapshot_color_at(snapshot: &DynamicImage, x: u32, y: u32) -> Color32 {
 fn format_color_value(color: Color32, format: ColorValueFormat) -> String {
     match format {
         ColorValueFormat::Hex => format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b()),
-        ColorValueFormat::Rgb => format!("rgb({}, {}, {})", color.r(), color.g(), color.b()),
+        ColorValueFormat::Rgb => format!("{}, {}, {}", color.r(), color.g(), color.b()),
+    }
+}
+
+fn hotkey_pressed(input: &InputState, accelerator: &str) -> bool {
+    let Some(hotkey) = parse_overlay_hotkey(accelerator) else {
+        return false;
+    };
+
+    input.events.iter().any(|event| match event {
+        Event::Key {
+            key,
+            physical_key,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        } => {
+            (*key == hotkey.key || *physical_key == Some(hotkey.key))
+                && hotkey_modifiers_match(&hotkey, modifiers)
+        }
+        Event::Cut => hotkey.key == Key::X && hotkey_modifiers_match(&hotkey, &input.modifiers),
+        _ => false,
+    }) || (input.key_pressed(hotkey.key) && hotkey_modifiers_match(&hotkey, &input.modifiers))
+}
+
+fn copy_shortcut_pressed(input: &InputState) -> bool {
+    input
+        .events
+        .iter()
+        .any(|event| matches!(event, Event::Copy))
+        || command_shortcut_pressed(input, Key::C)
+}
+
+fn command_shortcut_pressed(input: &InputState, key: Key) -> bool {
+    input.events.iter().any(|event| match event {
+        Event::Key {
+            key: event_key,
+            physical_key,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        } => {
+            (*event_key == key || *physical_key == Some(key))
+                && (modifiers.ctrl || modifiers.command)
+                && !modifiers.alt
+        }
+        _ => false,
+    }) || (input.key_pressed(key)
+        && (input.modifiers.ctrl || input.modifiers.command)
+        && !input.modifiers.alt)
+}
+
+fn hotkey_modifiers_match(hotkey: &OverlayHotkey, modifiers: &egui::Modifiers) -> bool {
+    let ctrl_down = modifiers.ctrl || modifiers.command;
+    ctrl_down == hotkey.ctrl
+        && modifiers.shift == hotkey.shift
+        && modifiers.alt == hotkey.alt
+        && (!hotkey.command || modifiers.command)
+}
+
+fn parse_overlay_hotkey(accelerator: &str) -> Option<OverlayHotkey> {
+    let mut hotkey = OverlayHotkey {
+        ctrl: false,
+        shift: false,
+        alt: false,
+        command: false,
+        key: Key::X,
+    };
+    let mut has_key = false;
+
+    for raw_part in accelerator
+        .replace('-', "+")
+        .split('+')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        match raw_part.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => hotkey.ctrl = true,
+            "shift" => hotkey.shift = true,
+            "alt" | "option" => hotkey.alt = true,
+            "win" | "cmd" | "meta" | "super" => hotkey.command = true,
+            _ => {
+                hotkey.key = parse_overlay_key(raw_part)?;
+                has_key = true;
+            }
+        }
+    }
+
+    has_key.then_some(hotkey)
+}
+
+fn parse_overlay_key(key: &str) -> Option<Key> {
+    match key.to_ascii_uppercase().as_str() {
+        "A" => Some(Key::A),
+        "B" => Some(Key::B),
+        "C" => Some(Key::C),
+        "D" => Some(Key::D),
+        "E" => Some(Key::E),
+        "F" => Some(Key::F),
+        "G" => Some(Key::G),
+        "H" => Some(Key::H),
+        "I" => Some(Key::I),
+        "J" => Some(Key::J),
+        "K" => Some(Key::K),
+        "L" => Some(Key::L),
+        "M" => Some(Key::M),
+        "N" => Some(Key::N),
+        "O" => Some(Key::O),
+        "P" => Some(Key::P),
+        "Q" => Some(Key::Q),
+        "R" => Some(Key::R),
+        "S" => Some(Key::S),
+        "T" => Some(Key::T),
+        "U" => Some(Key::U),
+        "V" => Some(Key::V),
+        "W" => Some(Key::W),
+        "X" => Some(Key::X),
+        "Y" => Some(Key::Y),
+        "Z" => Some(Key::Z),
+        "0" => Some(Key::Num0),
+        "1" => Some(Key::Num1),
+        "2" => Some(Key::Num2),
+        "3" => Some(Key::Num3),
+        "4" => Some(Key::Num4),
+        "5" => Some(Key::Num5),
+        "6" => Some(Key::Num6),
+        "7" => Some(Key::Num7),
+        "8" => Some(Key::Num8),
+        "9" => Some(Key::Num9),
+        "ESC" | "ESCAPE" => Some(Key::Escape),
+        "ENTER" | "RETURN" => Some(Key::Enter),
+        "SPACE" => Some(Key::Space),
+        "TAB" => Some(Key::Tab),
+        value => value
+            .strip_prefix('F')
+            .and_then(|number| number.parse::<usize>().ok())
+            .and_then(function_key),
+    }
+}
+
+fn function_key(number: usize) -> Option<Key> {
+    match number {
+        1 => Some(Key::F1),
+        2 => Some(Key::F2),
+        3 => Some(Key::F3),
+        4 => Some(Key::F4),
+        5 => Some(Key::F5),
+        6 => Some(Key::F6),
+        7 => Some(Key::F7),
+        8 => Some(Key::F8),
+        9 => Some(Key::F9),
+        10 => Some(Key::F10),
+        11 => Some(Key::F11),
+        12 => Some(Key::F12),
+        13 => Some(Key::F13),
+        14 => Some(Key::F14),
+        15 => Some(Key::F15),
+        16 => Some(Key::F16),
+        17 => Some(Key::F17),
+        18 => Some(Key::F18),
+        19 => Some(Key::F19),
+        20 => Some(Key::F20),
+        21 => Some(Key::F21),
+        22 => Some(Key::F22),
+        23 => Some(Key::F23),
+        24 => Some(Key::F24),
+        _ => None,
     }
 }
 
@@ -2070,7 +2265,7 @@ fn draw_size_label(painter: &Painter, selection: EguiRect) {
     );
     let position = selection.min + Vec2::new(8.0, -24.0);
     let rect = EguiRect::from_min_size(position, Vec2::new(96.0, 20.0));
-    painter.rect_filled(rect, 4.0, Color32::from_black_alpha(190));
+    painter.rect_filled(rect, 0.0, Color32::from_black_alpha(190));
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,
@@ -2096,17 +2291,18 @@ fn draw_magnifier(
     let sample_size = MAGNIFIER_SAMPLE_SIZE.max(3);
     let radius = sample_size / 2;
     let zoom_size = sample_size as f32 * cell_size;
-    let panel_size = Vec2::new((zoom_size + 16.0).max(188.0), zoom_size + 72.0);
+    let info_height = 50.0;
+    let panel_size = Vec2::new(zoom_size + 4.0, zoom_size + info_height + 4.0);
     let panel = floating_panel_rect(canvas, pixel.position, panel_size);
-    let image_origin = Pos2::new(panel.center().x - zoom_size / 2.0, panel.min.y + 8.0);
+    let image_origin = panel.min + Vec2::splat(1.0);
     let image_rect = EguiRect::from_min_size(image_origin, Vec2::splat(zoom_size));
 
-    painter.rect_filled(panel, 6.0, Color32::from_black_alpha(228));
+    painter.rect_filled(panel, 0, Color32::from_black_alpha(150));
     painter.rect_stroke(
         panel,
-        CornerRadius::same(6),
-        Stroke::new(1.0, Color32::from_white_alpha(40)),
-        StrokeKind::Outside,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, Color32::from_white_alpha(70)),
+        StrokeKind::Inside,
     );
 
     let max_x = snapshot.width().saturating_sub(1) as i32;
@@ -2129,40 +2325,40 @@ fn draw_magnifier(
         Vec2::splat(cell_size),
     );
     painter.rect_stroke(
-        center_rect.expand(1.0),
-        CornerRadius::ZERO,
-        Stroke::new(2.0, Color32::BLACK),
-        StrokeKind::Outside,
-    );
-    painter.rect_stroke(
         center_rect,
         CornerRadius::ZERO,
-        Stroke::new(2.0, Color32::WHITE),
-        StrokeKind::Inside,
-    );
-
-    let info_top = image_rect.max.y + 9.0;
-    let swatch =
-        EguiRect::from_min_size(Pos2::new(panel.min.x + 10.0, info_top), Vec2::splat(28.0));
-    painter.rect_filled(swatch, 4.0, pixel.color);
-    painter.rect_stroke(
-        swatch,
-        CornerRadius::same(4),
-        Stroke::new(1.0, Color32::from_white_alpha(90)),
+        Stroke::new(1.0, Color32::WHITE),
         StrokeKind::Outside,
     );
 
-    let text_x = swatch.max.x + 9.0;
+    let info_top = image_rect.max.y + 1.0;
+    let text_x = panel.min.x + 8.0;
+    let coord_center_y = info_top + 14.0;
+    let color_center_y = info_top + 34.0;
+    let swatch_size = 14.0;
+    let swatch = EguiRect::from_center_size(
+        Pos2::new(text_x + swatch_size / 2.0, color_center_y),
+        Vec2::splat(swatch_size),
+    );
+    let color_text_x = swatch.max.x + 7.0;
+
     painter.text(
-        Pos2::new(text_x, info_top - 1.0),
-        Align2::LEFT_TOP,
-        format!("X {}  Y {}", pixel.screen_x, pixel.screen_y),
+        Pos2::new(text_x, coord_center_y),
+        Align2::LEFT_CENTER,
+        format!("({}, {})", pixel.screen_x, pixel.screen_y),
         FontId::monospace(12.0),
         Color32::from_white_alpha(225),
     );
+    painter.rect_filled(swatch, 0.0, pixel.color);
+    painter.rect_stroke(
+        swatch,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, Color32::from_white_alpha(90)),
+        StrokeKind::Outside,
+    );
     painter.text(
-        Pos2::new(text_x, info_top + 17.0),
-        Align2::LEFT_TOP,
+        Pos2::new(color_text_x, color_center_y),
+        Align2::LEFT_CENTER,
         format_color_value(pixel.color, color_format),
         FontId::monospace(12.0),
         Color32::WHITE,
@@ -2197,19 +2393,19 @@ fn draw_toolbar(
     text: OverlayText,
 ) {
     let toolbar = toolbar_rect(canvas, selection, text);
-    painter.rect_filled(toolbar, 6.0, Color32::from_black_alpha(220));
+    painter.rect_filled(toolbar, 0.0, Color32::from_black_alpha(220));
     painter.rect_stroke(
         toolbar,
-        CornerRadius::same(6),
+        CornerRadius::same(0),
         Stroke::new(1.0, border_color.gamma_multiply(0.7)),
         StrokeKind::Outside,
     );
 
     for button in toolbar_buttons(toolbar, text) {
-        painter.rect_filled(button.rect, 4.0, Color32::from_white_alpha(18));
+        painter.rect_filled(button.rect, 0.0, Color32::from_white_alpha(18));
         painter.rect_stroke(
             button.rect,
-            CornerRadius::same(4),
+            CornerRadius::same(0),
             Stroke::new(1.0, Color32::from_white_alpha(36)),
             StrokeKind::Inside,
         );
@@ -2301,7 +2497,7 @@ fn draw_hint(painter: &Painter, canvas: EguiRect, text: &str) {
 fn draw_error(painter: &Painter, canvas: EguiRect, error: &str) {
     let max_width = 520.0f32.min(canvas.width() - 32.0).max(240.0);
     let rect = EguiRect::from_center_size(canvas.center(), Vec2::new(max_width, 72.0));
-    painter.rect_filled(rect, 6.0, Color32::from_rgb(94, 26, 28));
+    painter.rect_filled(rect, 0.0, Color32::from_rgb(94, 26, 28));
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,

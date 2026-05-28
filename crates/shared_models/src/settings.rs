@@ -164,6 +164,7 @@ impl Default for TranslateSettings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HotkeySettings {
     pub capture: String,
+    pub pin_selection: String,
     pub toggle_pins_click_through: String,
     pub show_history: String,
 }
@@ -172,7 +173,8 @@ impl Default for HotkeySettings {
     fn default() -> Self {
         Self {
             capture: "Ctrl+Shift+A".to_owned(),
-            toggle_pins_click_through: "Ctrl+Shift+X".to_owned(),
+            pin_selection: "Ctrl+Shift+X".to_owned(),
+            toggle_pins_click_through: "Ctrl+Shift+T".to_owned(),
             show_history: "Ctrl+Shift+H".to_owned(),
         }
     }
