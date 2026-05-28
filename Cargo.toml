@@ -21,6 +21,7 @@ authors = ["snap_pin contributors"]
 [workspace.dependencies]
 core_service = { path = "crates/core_service" }
 ipc = { path = "crates/ipc" }
+log = "0.4"
 model_registry = { path = "crates/model_registry" }
 ocr_engine = { path = "crates/ocr_engine" }
 platform_win32 = { path = "crates/platform_win32" }

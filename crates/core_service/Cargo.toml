@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 ipc.workspace = true
+log.workspace = true
 model_registry.workspace = true
 ocr_engine.workspace = true
 shared_models.workspace = true

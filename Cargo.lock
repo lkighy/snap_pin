@@ -937,6 +937,7 @@ name = "core_service"
 version = "0.1.0"
 dependencies = [
  "ipc",
+ "log",
  "model_registry",
  "ocr_engine",
  "shared_models",
@@ -5011,6 +5012,7 @@ dependencies = [
  "core_service",
  "image",
  "ipc",
+ "log",
  "platform_win32",
  "serde",
  "serde_json",

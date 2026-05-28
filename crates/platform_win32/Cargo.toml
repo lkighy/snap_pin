@@ -5,7 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-log = "0.4"
+log.workspace = true
 shared_models.workspace = true
 
 [target.'cfg(windows)'.dependencies]

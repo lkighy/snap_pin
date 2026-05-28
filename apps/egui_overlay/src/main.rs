@@ -100,18 +100,24 @@ impl log::Log for OverlayFileLogger {
             return;
         }
 
+        let line = format!(
+            "[{} pid={}] {:<5} {} - {}",
+            log_timestamp(),
+            std::process::id(),
+            record.level(),
+            record.target(),
+            record.args()
+        );
+
         if let Some(file) = self.file.get()
             && let Ok(mut file) = file.lock()
         {
-            let _ = writeln!(
-                file,
-                "[{} pid={}] {:<5} {} - {}",
-                log_timestamp(),
-                std::process::id(),
-                record.level(),
-                record.target(),
-                record.args()
-            );
+            let _ = writeln!(file, "{line}");
+        }
+
+        if cfg!(debug_assertions) {
+            let mut stderr = std::io::stderr().lock();
+            let _ = writeln!(stderr, "{line}");
         }
     }
 

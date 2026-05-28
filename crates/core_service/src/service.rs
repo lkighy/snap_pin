@@ -48,7 +48,8 @@ impl Default for CoreService {
 
 impl CoreService {
     pub fn handle_command(&mut self, command: CoreCommand) -> Vec<CoreEvent> {
-        match command {
+        log::info!("core handling command {}", command_name(&command));
+        let events = match command {
             CoreCommand::StartCapture => vec![self.screenshot.start_capture()],
             CoreCommand::CancelCapture => vec![self.screenshot.cancel_capture()],
             CoreCommand::CompleteCapture { image, region } => self.complete_capture(image, region),
@@ -71,7 +72,12 @@ impl CoreService {
                 self.config.replace(settings);
                 vec![CoreEvent::SettingsUpdated]
             }
+        };
+
+        for event in &events {
+            log_core_event(event);
         }
+        events
     }
 
     pub fn settings(&self) -> &Settings {
@@ -110,15 +116,28 @@ impl CoreService {
         region: shared_models::Rect,
     ) -> Vec<CoreEvent> {
         let image_id = image.id.clone();
+        log::info!(
+            "core storing captured image id={} bytes={} region={:?}",
+            image_id.0,
+            image.bytes.len(),
+            region
+        );
         self.screenshot.store_image(image);
         vec![CoreEvent::CaptureFinished { image_id, region }]
     }
 
     fn run_ocr(&mut self, mut job: OcrJob) -> Vec<CoreEvent> {
+        log::info!(
+            "core starting ocr job={} image={} provider={:?}",
+            job.id,
+            job.image_id.0,
+            job.provider
+        );
         let mut events = vec![self.ocr.enqueue(job.clone())];
         self.apply_default_ocr_model(&mut job);
 
         let Some(image) = self.screenshot.image(&job.image_id) else {
+            log::error!("core ocr image missing image={}", job.image_id.0);
             events.push(CoreEvent::Error {
                 code: "image_not_found".to_owned(),
                 message: format!("image '{}' is not available for OCR", job.image_id.0),
@@ -131,18 +150,38 @@ impl CoreService {
                 if self.settings.history.enabled {
                     self.history.push_ocr(result.clone());
                 }
+                log::info!(
+                    "core ocr completed job={} blocks={} text_chars={}",
+                    result.job_id,
+                    result.blocks.len(),
+                    result.plain_text.chars().count()
+                );
                 events.push(CoreEvent::OcrCompleted { result });
             }
-            Err(error) => events.push(CoreEvent::Error {
-                code: error.code,
-                message: error.message,
-            }),
+            Err(error) => {
+                log::error!(
+                    "core ocr failed code={} message={}",
+                    error.code,
+                    error.message
+                );
+                events.push(CoreEvent::Error {
+                    code: error.code,
+                    message: error.message,
+                });
+            }
         }
 
         events
     }
 
     fn run_translation(&mut self, mut request: TranslationRequest) -> Vec<CoreEvent> {
+        log::info!(
+            "core starting translation request={} provider={:?} target={} source_chars={}",
+            request.id,
+            request.provider,
+            request.target_language.0,
+            request.source_text.chars().count()
+        );
         let mut events = vec![self.translate.enqueue(request.clone())];
         self.apply_default_translation_model(&mut request);
 
@@ -151,23 +190,41 @@ impl CoreService {
                 if self.settings.history.enabled {
                     self.history.push_translation(result.clone());
                 }
+                log::info!(
+                    "core translation completed request={} translated_chars={}",
+                    result.request_id,
+                    result.translated_text.chars().count()
+                );
                 events.push(CoreEvent::TranslationCompleted { result });
             }
-            Err(error) => events.push(CoreEvent::Error {
-                code: error.code,
-                message: error.message,
-            }),
+            Err(error) => {
+                log::error!(
+                    "core translation failed code={} message={}",
+                    error.code,
+                    error.message
+                );
+                events.push(CoreEvent::Error {
+                    code: error.code,
+                    message: error.message,
+                });
+            }
         }
 
         events
     }
 
     fn run_ocr_and_translate(&mut self, job: OcrJob, target_language: String) -> Vec<CoreEvent> {
+        log::info!(
+            "core starting ocr and translation job={} target={}",
+            job.id,
+            target_language
+        );
         let mut events = self.run_ocr(job);
         let Some(ocr_result) = events.iter().find_map(|event| match event {
             CoreEvent::OcrCompleted { result } => Some(result.clone()),
             _ => None,
         }) else {
+            log::error!("core ocr and translation stopped because ocr did not complete");
             return events;
         };
 
@@ -195,6 +252,7 @@ impl CoreService {
         }
 
         if let Some(model) = job.model_id.as_deref().and_then(|id| self.models.find(id)) {
+            log::info!("core loading ocr model id={}", model.id);
             let _ = self.ocr_engine.load_model(model);
         }
     }
@@ -218,8 +276,65 @@ impl CoreService {
             .as_deref()
             .and_then(|id| self.models.find(id))
         {
+            log::info!("core loading translation model id={}", model.id);
             let _ = self.translate_engine.load_model(model);
         }
+    }
+}
+
+fn command_name(command: &CoreCommand) -> &'static str {
+    match command {
+        CoreCommand::StartCapture => "start_capture",
+        CoreCommand::CancelCapture => "cancel_capture",
+        CoreCommand::CompleteCapture { .. } => "complete_capture",
+        CoreCommand::PinImage { .. } => "pin_image",
+        CoreCommand::RunOcr { .. } => "run_ocr",
+        CoreCommand::Translate { .. } => "translate",
+        CoreCommand::RunOcrAndTranslate { .. } => "run_ocr_and_translate",
+        CoreCommand::RegisterModel(_) => "register_model",
+        CoreCommand::UpdateSettings(_) => "update_settings",
+    }
+}
+
+fn log_core_event(event: &CoreEvent) {
+    match event {
+        CoreEvent::CaptureFinished { image_id, region } => {
+            log::info!(
+                "core produced capture_finished image={} region={region:?}",
+                image_id.0
+            );
+        }
+        CoreEvent::ImagePinned { image_id } => {
+            log::info!("core produced image_pinned image={}", image_id.0);
+        }
+        CoreEvent::OcrQueued { job_id } => {
+            log::info!("core produced ocr_queued job={job_id}");
+        }
+        CoreEvent::OcrCompleted { result } => {
+            log::info!(
+                "core produced ocr_completed job={} blocks={}",
+                result.job_id,
+                result.blocks.len()
+            );
+        }
+        CoreEvent::TranslationQueued { request_id } => {
+            log::info!("core produced translation_queued request={request_id}");
+        }
+        CoreEvent::TranslationCompleted { result } => {
+            log::info!(
+                "core produced translation_completed request={}",
+                result.request_id
+            );
+        }
+        CoreEvent::ModelRegistered { model_id } => {
+            log::info!("core produced model_registered model={model_id}");
+        }
+        CoreEvent::Error { code, message } => {
+            log::error!("core produced error code={code} message={message}");
+        }
+        CoreEvent::CaptureStarted => log::info!("core produced capture_started"),
+        CoreEvent::CaptureCanceled => log::info!("core produced capture_canceled"),
+        CoreEvent::SettingsUpdated => log::info!("core produced settings_updated"),
     }
 }
 
