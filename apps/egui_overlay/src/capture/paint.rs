@@ -4,7 +4,7 @@ use eframe::egui::{
 };
 use image::{DynamicImage, GenericImageView};
 
-use crate::overlay_text::OverlayText;
+use crate::runtime::text::OverlayText;
 use crate::{CaptureAction, ColorValueFormat, MAGNIFIER_SAMPLE_SIZE, PointerPixel};
 
 // Rendering helpers are kept stateless so CaptureOverlayApp owns behavior, not paint details.

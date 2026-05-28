@@ -1,8 +1,8 @@
 use shared_models::{CoreCommand, CoreEvent, PinnedImage, Rect};
 
-use crate::annotation::Annotation;
-use crate::input::{OverlayInput, SelectionDrag};
-use crate::text_layer::TextLayer;
+use crate::overlay::annotation::Annotation;
+use crate::overlay::input::{OverlayInput, SelectionDrag};
+use crate::overlay::text_layer::TextLayer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayMode {

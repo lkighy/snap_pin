@@ -1,17 +1,9 @@
 #![allow(dead_code)]
 
-mod annotation;
-mod capture_paint;
-mod cli;
-mod fonts;
-mod hotkeys;
-mod input;
-mod logging;
-mod overlay_state;
-mod overlay_text;
+mod capture;
+mod overlay;
 mod pin;
-mod renderer;
-mod text_layer;
+mod runtime;
 
 use std::borrow::Cow;
 use std::collections::VecDeque;
@@ -35,16 +27,16 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use serde::Deserialize;
 use shared_models::{Point, Rect, Size};
 
-use capture_paint::{
+use capture::hotkeys::{command_shortcut_pressed, copy_shortcut_pressed, hotkey_pressed};
+use capture::paint::{
     draw_error, draw_hint, draw_magnifier, draw_pin_border, draw_selection_mask, draw_size_label,
     draw_toolbar, format_color_value, snapshot_color_at, toolbar_action_at,
 };
-use cli::{CliArgs, OverlayLanguage, OverlayRunMode, parse_color};
-use fonts::install_system_fonts;
-use hotkeys::{command_shortcut_pressed, copy_shortcut_pressed, hotkey_pressed};
-use logging::init_logging;
-use overlay_state::OverlayApp;
-use overlay_text::OverlayText;
+use overlay::state::OverlayApp;
+use runtime::cli::{CliArgs, OverlayLanguage, OverlayRunMode, parse_color};
+use runtime::fonts::install_system_fonts;
+use runtime::logging::init_logging;
+use runtime::text::OverlayText;
 
 const MIN_SELECTION_SIZE: f32 = 4.0;
 const CONTROL_PROTOCOL_VERSION: u32 = 2;
