@@ -7,6 +7,10 @@ use image::{DynamicImage, GenericImageView};
 use crate::runtime::text::OverlayText;
 use crate::{CaptureAction, ColorValueFormat, MAGNIFIER_SAMPLE_SIZE, PointerPixel};
 
+const TOOLBAR_BUTTON_SIZE: f32 = 28.0;
+const TOOLBAR_BUTTON_GAP: f32 = 4.0;
+const TOOLBAR_PADDING: f32 = 6.0;
+
 // Rendering helpers are kept stateless so CaptureOverlayApp owns behavior, not paint details.
 pub(crate) fn snapshot_color_at(snapshot: &DynamicImage, x: u32, y: u32) -> Color32 {
     let pixel = snapshot.get_pixel(x, y).0;
@@ -212,6 +216,7 @@ pub(crate) fn draw_toolbar(
     text: OverlayText,
 ) {
     let toolbar = toolbar_rect(canvas, selection, text);
+    let pointer = painter.ctx().input(|input| input.pointer.hover_pos());
     painter.rect_filled(toolbar, 0.0, Color32::from_black_alpha(220));
     painter.rect_stroke(
         toolbar,
@@ -228,13 +233,10 @@ pub(crate) fn draw_toolbar(
             Stroke::new(1.0, Color32::from_white_alpha(36)),
             StrokeKind::Inside,
         );
-        painter.text(
-            button.rect.center(),
-            Align2::CENTER_CENTER,
-            button.label,
-            FontId::proportional(12.0),
-            Color32::WHITE,
-        );
+        draw_toolbar_icon(painter, button.rect, button.action, Color32::WHITE);
+        if pointer.is_some_and(|position| button.rect.contains(position)) {
+            draw_toolbar_tooltip(painter, canvas, button.rect, button.label);
+        }
     }
 }
 
@@ -263,13 +265,8 @@ fn toolbar_rect(canvas: EguiRect, selection: EguiRect, text: OverlayText) -> Egu
     EguiRect::from_min_size(Pos2::new(x, y), size)
 }
 
-fn toolbar_width(text: OverlayText) -> f32 {
-    let labels = [text.pin_action, text.copy_action, text.save_action];
-    labels.iter().map(|label| button_width(label)).sum::<f32>() + 20.0
-}
-
-fn button_width(label: &str) -> f32 {
-    (label.chars().count() as f32 * 12.0 + 24.0).clamp(52.0, 118.0)
+fn toolbar_width(_text: OverlayText) -> f32 {
+    TOOLBAR_PADDING * 2.0 + TOOLBAR_BUTTON_SIZE * 3.0 + TOOLBAR_BUTTON_GAP * 2.0
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -280,7 +277,7 @@ struct ToolbarButton {
 }
 
 fn toolbar_buttons(toolbar: EguiRect, text: OverlayText) -> Vec<ToolbarButton> {
-    let mut x = toolbar.min.x + 6.0;
+    let mut x = toolbar.min.x + TOOLBAR_PADDING;
     [
         (text.pin_action, CaptureAction::Pin),
         (text.copy_action, CaptureAction::Copy),
@@ -288,12 +285,11 @@ fn toolbar_buttons(toolbar: EguiRect, text: OverlayText) -> Vec<ToolbarButton> {
     ]
     .into_iter()
     .map(|(label, action)| {
-        let width = button_width(label);
         let rect = EguiRect::from_min_size(
-            Pos2::new(x, toolbar.min.y + 5.0),
-            Vec2::new(width, toolbar.height() - 10.0),
+            Pos2::new(x, toolbar.center().y - TOOLBAR_BUTTON_SIZE * 0.5),
+            Vec2::splat(TOOLBAR_BUTTON_SIZE),
         );
-        x += width + 4.0;
+        x += TOOLBAR_BUTTON_SIZE + TOOLBAR_BUTTON_GAP;
         ToolbarButton {
             rect,
             label,
@@ -301,6 +297,90 @@ fn toolbar_buttons(toolbar: EguiRect, text: OverlayText) -> Vec<ToolbarButton> {
         }
     })
     .collect()
+}
+
+fn draw_toolbar_icon(painter: &Painter, rect: EguiRect, action: CaptureAction, color: Color32) {
+    match action {
+        CaptureAction::Pin => draw_pin_icon(painter, rect, color),
+        CaptureAction::Copy => draw_copy_icon(painter, rect, color),
+        CaptureAction::Save => draw_save_icon(painter, rect, color),
+    }
+}
+
+fn draw_pin_icon(painter: &Painter, rect: EguiRect, color: Color32) {
+    let center = rect.center();
+    let stroke = Stroke::new(1.7, color);
+    let head = EguiRect::from_center_size(center + Vec2::new(0.0, -5.5), Vec2::new(10.0, 5.0));
+    painter.rect_stroke(head, CornerRadius::same(1), stroke, StrokeKind::Inside);
+    painter.line_segment(
+        [center + Vec2::new(0.0, -3.0), center + Vec2::new(0.0, 6.5)],
+        stroke,
+    );
+    painter.line_segment(
+        [center + Vec2::new(-5.0, 1.5), center + Vec2::new(5.0, 1.5)],
+        stroke,
+    );
+    painter.line_segment(
+        [center + Vec2::new(0.0, 6.5), center + Vec2::new(-3.0, 10.5)],
+        stroke,
+    );
+}
+
+fn draw_copy_icon(painter: &Painter, rect: EguiRect, color: Color32) {
+    let stroke = Stroke::new(1.7, color);
+    let back = EguiRect::from_center_size(rect.center() + Vec2::new(-2.5, -2.5), Vec2::splat(10.0));
+    let front = EguiRect::from_center_size(rect.center() + Vec2::new(2.5, 2.5), Vec2::splat(10.0));
+    painter.rect_stroke(back, CornerRadius::same(1), stroke, StrokeKind::Inside);
+    painter.rect_filled(front, 0.0, Color32::from_black_alpha(220));
+    painter.rect_stroke(front, CornerRadius::same(1), stroke, StrokeKind::Inside);
+}
+
+fn draw_save_icon(painter: &Painter, rect: EguiRect, color: Color32) {
+    let stroke = Stroke::new(1.7, color);
+    let body = EguiRect::from_center_size(rect.center(), Vec2::splat(15.0));
+    painter.rect_stroke(body, CornerRadius::same(1), stroke, StrokeKind::Inside);
+    painter.line_segment(
+        [
+            body.left_top() + Vec2::new(3.0, 5.0),
+            body.right_top() + Vec2::new(-3.0, 5.0),
+        ],
+        stroke,
+    );
+    let slot = EguiRect::from_min_size(
+        Pos2::new(body.left() + 4.0, body.bottom() - 5.0),
+        Vec2::new(body.width() - 8.0, 5.0),
+    );
+    painter.rect_stroke(slot, CornerRadius::same(1), stroke, StrokeKind::Inside);
+}
+
+fn draw_toolbar_tooltip(painter: &Painter, canvas: EguiRect, button: EguiRect, label: &str) {
+    let galley = painter.layout_no_wrap(
+        label.to_owned(),
+        FontId::proportional(12.0),
+        Color32::from_white_alpha(235),
+    );
+    let size = galley.size() + Vec2::new(14.0, 8.0);
+    let mut min = Pos2::new(
+        button.center().x - size.x * 0.5,
+        button.min.y - size.y - 6.0,
+    );
+    if min.y < canvas.min.y + 6.0 {
+        min.y = button.max.y + 6.0;
+    }
+    min.x = min.x.clamp(canvas.min.x + 6.0, canvas.max.x - size.x - 6.0);
+    let rect = EguiRect::from_min_size(min, size);
+    painter.rect_filled(rect, 0.0, Color32::from_black_alpha(230));
+    painter.rect_stroke(
+        rect,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, Color32::from_white_alpha(34)),
+        StrokeKind::Inside,
+    );
+    painter.galley(
+        Pos2::new(rect.min.x + 7.0, rect.min.y + 4.0),
+        galley,
+        Color32::from_white_alpha(235),
+    );
 }
 
 pub(crate) fn draw_hint(painter: &Painter, canvas: EguiRect, text: &str) {

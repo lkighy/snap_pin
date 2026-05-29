@@ -52,6 +52,12 @@ const SELECTION_MIN_SIZE: f32 = 12.0;
 const DEFERRED_SAVE_DELAY_MS: u64 = 80;
 const SAVE_CANCELED_CODE: &str = "save_canceled";
 const MAGNIFIER_SAMPLE_SIZE: i32 = 17;
+const PIN_OPACITY_STEP: f32 = 0.05;
+const PIN_MIN_OPACITY: f32 = 0.2;
+const PIN_ZOOM_FACTOR: f32 = 1.1;
+const PIN_MIN_WIDTH: f32 = 96.0;
+const PIN_MIN_HEIGHT: f32 = 72.0;
+const PIN_MAX_SIDE: f32 = 8192.0;
 
 fn main() -> eframe::Result<()> {
     init_logging();
@@ -357,7 +363,10 @@ impl CaptureOverlayApp {
         }
 
         if self.show_magnifier {
-            if let Some(pixel) = hovered_pixel {
+            if let Some(pixel) = hovered_pixel.filter(|pixel| {
+                self.selection
+                    .is_none_or(|selection| selection.contains(pixel.position))
+            }) {
                 draw_magnifier(
                     painter,
                     canvas,
@@ -1466,12 +1475,88 @@ impl PinWindowApp {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         }
 
-        let scroll = ctx.input(|input| input.raw_scroll_delta.y);
-        if scroll.abs() > 0.0 && ctx.input(|input| input.modifiers.ctrl) {
-            let delta = if scroll > 0.0 { 0.05 } else { -0.05 };
-            self.opacity = (self.opacity + delta).clamp(0.2, 1.0);
+        let (scroll, ctrl_down, viewport_rect, pointer_pos) = ctx.input(|input| {
+            (
+                input.raw_scroll_delta.y,
+                input.modifiers.ctrl,
+                input.viewport().inner_rect.or(input.viewport().outer_rect),
+                input.pointer.hover_pos(),
+            )
+        });
+        if scroll.abs() <= f32::EPSILON {
+            return;
         }
+
+        if ctrl_down {
+            let delta = if scroll > 0.0 {
+                PIN_OPACITY_STEP
+            } else {
+                -PIN_OPACITY_STEP
+            };
+            self.opacity = (self.opacity + delta).clamp(PIN_MIN_OPACITY, 1.0);
+            ctx.request_repaint();
+            return;
+        }
+
+        self.zoom_with_wheel(ctx, scroll, viewport_rect, pointer_pos);
     }
+
+    fn zoom_with_wheel(
+        &self,
+        ctx: &Context,
+        scroll: f32,
+        viewport_rect: Option<EguiRect>,
+        pointer_pos: Option<Pos2>,
+    ) {
+        let Some(viewport_rect) = viewport_rect else {
+            return;
+        };
+        let current_size = viewport_rect.size();
+        if current_size.x <= 0.0 || current_size.y <= 0.0 {
+            return;
+        }
+
+        let zoom_factor = if scroll > 0.0 {
+            PIN_ZOOM_FACTOR
+        } else {
+            1.0 / PIN_ZOOM_FACTOR
+        };
+        let new_size = clamp_pin_window_size(current_size * zoom_factor);
+        if (new_size - current_size).length_sq() <= f32::EPSILON {
+            return;
+        }
+
+        let anchor = pointer_pos.unwrap_or(Pos2::new(current_size.x * 0.5, current_size.y * 0.5));
+        let anchor_fraction = Vec2::new(
+            (anchor.x / current_size.x).clamp(0.0, 1.0),
+            (anchor.y / current_size.y).clamp(0.0, 1.0),
+        );
+        let offset = Vec2::new(
+            (current_size.x - new_size.x) * anchor_fraction.x,
+            (current_size.y - new_size.y) * anchor_fraction.y,
+        );
+
+        ctx.send_viewport_cmd(ViewportCommand::OuterPosition(viewport_rect.min + offset));
+        ctx.send_viewport_cmd(ViewportCommand::InnerSize(new_size));
+        ctx.request_repaint();
+    }
+}
+
+fn clamp_pin_window_size(size: Vec2) -> Vec2 {
+    let mut size = size;
+    if size.x < PIN_MIN_WIDTH {
+        size *= PIN_MIN_WIDTH / size.x.max(1.0);
+    }
+    if size.y < PIN_MIN_HEIGHT {
+        size *= PIN_MIN_HEIGHT / size.y.max(1.0);
+    }
+    if size.x > PIN_MAX_SIDE {
+        size *= PIN_MAX_SIDE / size.x;
+    }
+    if size.y > PIN_MAX_SIDE {
+        size *= PIN_MAX_SIDE / size.y;
+    }
+    size
 }
 
 impl App for PinWindowApp {
