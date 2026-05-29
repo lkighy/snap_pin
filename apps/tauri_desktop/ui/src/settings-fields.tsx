@@ -1,0 +1,409 @@
+import { KeyboardEvent, ReactNode, useState } from "react";
+import { Keyboard, Languages, Settings2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
+import {
+  localeOptions,
+  Locale,
+  TranslationKey,
+  Translator,
+} from "@/i18n";
+
+export function StatusCard({
+  label,
+  value,
+  tone = "default",
+}: {
+  label: string;
+  value: string;
+  tone?: "default" | "danger";
+}) {
+  return (
+    <div className="rounded-lg border bg-card p-3 shadow-sm">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-xs font-medium uppercase text-muted-foreground">
+          {label}
+        </span>
+        <span
+          className={cn(
+            "size-2 rounded-full bg-emerald-500",
+            tone === "danger" && "bg-destructive",
+          )}
+        />
+      </div>
+      <strong className="block truncate text-sm font-semibold">{value}</strong>
+    </div>
+  );
+}
+
+export function FieldGrid({ children }: { children: ReactNode }) {
+  return <div className="grid grid-cols-2 gap-4">{children}</div>;
+}
+
+function FieldFrame({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="rounded-md border bg-background/70 p-3">
+      <Label className="text-xs text-muted-foreground">{label}</Label>
+      <div className="mt-2">{children}</div>
+    </div>
+  );
+}
+
+export function SwitchField({
+  label,
+  checked,
+  onCheckedChange,
+}: {
+  label: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="flex h-[62px] items-center justify-between gap-3 rounded-md border bg-background/70 px-3">
+      <Label className="text-sm">{label}</Label>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+    </div>
+  );
+}
+
+export function TextField({
+  label,
+  value,
+  placeholder,
+  onValueChange,
+}: {
+  label: string;
+  value: string;
+  placeholder?: string;
+  onValueChange: (value: string) => void;
+}) {
+  return (
+    <FieldFrame label={label}>
+      <Input
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onValueChange(event.target.value)}
+      />
+    </FieldFrame>
+  );
+}
+
+export function HotkeyField({
+  label,
+  value,
+  onValueChange,
+  t,
+}: {
+  label: string;
+  value: string;
+  onValueChange: (value: string) => void;
+  t: Translator;
+}) {
+  const [recording, setRecording] = useState(false);
+
+  function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    if (!recording) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (
+      event.key === "Escape" &&
+      !event.ctrlKey &&
+      !event.shiftKey &&
+      !event.altKey &&
+      !event.metaKey
+    ) {
+      setRecording(false);
+      return;
+    }
+
+    const hotkey = formatHotkey(event);
+    if (!hotkey) {
+      return;
+    }
+
+    onValueChange(hotkey);
+    setRecording(false);
+  }
+
+  return (
+    <FieldFrame label={label}>
+      <Button
+        type="button"
+        variant="outline"
+        aria-pressed={recording}
+        title={t("hotkey.clickToRecord")}
+        className={cn(
+          "w-full justify-start font-mono",
+          recording &&
+            "border-primary bg-accent text-accent-foreground ring-2 ring-ring",
+        )}
+        onClick={(event) => {
+          setRecording(true);
+          event.currentTarget.focus();
+        }}
+        onBlur={() => setRecording(false)}
+        onKeyDown={handleKeyDown}
+      >
+        <Keyboard className="size-4 text-muted-foreground" />
+        <span>{recording ? t("hotkey.recording") : value}</span>
+      </Button>
+    </FieldFrame>
+  );
+}
+
+function formatHotkey(event: KeyboardEvent<HTMLElement>) {
+  const key = normalizeHotkeyKey(event);
+  if (!key) {
+    return null;
+  }
+
+  const modifiers = [
+    event.ctrlKey ? "Ctrl" : null,
+    event.shiftKey ? "Shift" : null,
+    event.altKey ? "Alt" : null,
+    event.metaKey ? "Win" : null,
+  ].filter(Boolean);
+
+  return [...modifiers, key].join("+");
+}
+
+function normalizeHotkeyKey(event: KeyboardEvent<HTMLElement>) {
+  const { code, key } = event;
+  if (["Control", "Shift", "Alt", "Meta"].includes(key)) {
+    return null;
+  }
+
+  if (/^Key[A-Z]$/.test(code)) {
+    return code.slice(3);
+  }
+  if (/^Digit[0-9]$/.test(code)) {
+    return code.slice(5);
+  }
+  if (/^Numpad[0-9]$/.test(code)) {
+    return code.slice(6);
+  }
+  if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) {
+    return code;
+  }
+
+  switch (code) {
+    case "PrintScreen":
+      return "PrintScreen";
+    case "Escape":
+      return "Esc";
+    case "Enter":
+    case "NumpadEnter":
+      return "Enter";
+    case "Space":
+      return "Space";
+    case "Tab":
+      return "Tab";
+    default:
+      break;
+  }
+
+  const upper = key.toUpperCase();
+  return /^[A-Z0-9]$/.test(upper) ? upper : null;
+}
+
+export function NumberField({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onValueChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onValueChange: (value: number) => void;
+}) {
+  return (
+    <FieldFrame label={label}>
+      <Input
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => onValueChange(Number(event.target.value))}
+      />
+    </FieldFrame>
+  );
+}
+
+export function RangeField({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onValueChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onValueChange: (value: number) => void;
+}) {
+  return (
+    <FieldFrame label={label}>
+      <div className="flex items-center gap-3">
+        <input
+          className="accented-range"
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(event) => onValueChange(Number(event.target.value))}
+        />
+        <Badge variant="secondary" className="min-w-12 justify-center">
+          {value}
+        </Badge>
+      </div>
+    </FieldFrame>
+  );
+}
+
+export function ColorField({
+  label,
+  value,
+  onValueChange,
+}: {
+  label: string;
+  value: string;
+  onValueChange: (value: string) => void;
+}) {
+  return (
+    <FieldFrame label={label}>
+      <div className="flex items-center gap-3">
+        <input
+          type="color"
+          value={value}
+          className="h-9 w-14 rounded-md border border-input bg-background p-1"
+          onChange={(event) => onValueChange(event.target.value)}
+        />
+        <span className="text-sm font-medium text-muted-foreground">{value}</span>
+      </div>
+    </FieldFrame>
+  );
+}
+
+export function LanguageSelect({
+  locale,
+  onLocaleChange,
+  t,
+}: {
+  locale: Locale;
+  onLocaleChange: (locale: Locale) => void;
+  t: Translator;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <Label className="sr-only">{t("language.label")}</Label>
+      <Select value={locale} onValueChange={(value) => onLocaleChange(value as Locale)}>
+        <SelectTrigger className="w-[132px]">
+          <Languages className="size-4 text-muted-foreground" />
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {localeOptions.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+export function SelectField({
+  label,
+  value,
+  options,
+  onValueChange,
+}: {
+  label: string;
+  value: string;
+  options: ReadonlyArray<{ value: string; label: string }>;
+  onValueChange: (value: string) => void;
+}) {
+  return (
+    <FieldFrame label={label}>
+      <Select value={value} onValueChange={onValueChange}>
+        <SelectTrigger>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </FieldFrame>
+  );
+}
+
+export function ModelTile({
+  label,
+  value,
+  configuredLabel,
+}: {
+  label: string;
+  value: string;
+  configuredLabel: string;
+}) {
+  return (
+    <div className="rounded-md border bg-background/70 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-medium text-muted-foreground">{label}</p>
+          <p className="mt-2 text-sm font-semibold">{value}</p>
+        </div>
+        <Settings2 className="size-4 text-muted-foreground" />
+      </div>
+      <Separator className="my-4" />
+      <Badge variant="secondary">{configuredLabel}</Badge>
+    </div>
+  );
+}
+
+export function localizedOptions(
+  options: Array<{ value: string; labelKey: TranslationKey }>,
+  t: Translator,
+) {
+  return options.map((option) => ({
+    value: option.value,
+    label: t(option.labelKey),
+  }));
+}

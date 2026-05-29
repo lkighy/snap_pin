@@ -51,6 +51,7 @@ export interface TranslationSettings {
 
 export interface HotkeySettings {
   capture: string;
+  pinSelection: string;
   togglePinsClickThrough: string;
   showHistory: string;
 }

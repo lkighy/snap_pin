@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use tauri::{AppHandle, Manager};
 
-use crate::settings_dto::AppSettingsDto;
+use crate::settings::dto::AppSettingsDto;
 
 const SETTINGS_FILE: &str = "settings.json";
 

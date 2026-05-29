@@ -1,21 +1,20 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use platform_win32::{
-    CaptureRequest, CaptureWindowRegion, DxgiCaptureBackend, GdiCaptureBackend, HotkeyListener,
-    HotkeyRegistration, NamedSharedMemory, WgcCaptureBackend, WindowsCaptureBackend,
-    capture_window_regions, create_named_shared_memory, listen_for_hotkey,
+    CaptureWindowRegion, HotkeyListener, HotkeyRegistration, NamedSharedMemory, listen_for_hotkey,
 };
 use serde::{Deserialize, Serialize};
-use shared_models::{ImageFormat, Settings};
+use shared_models::Settings;
 use tauri::{AppHandle, Manager};
 
+use super::overlay_launch::overlay_launch;
+use super::snapshot::{SnapshotCapture, capture_snapshot};
 use crate::shell_state::ShellState;
 
 const OVERLAY_CONTROL_PORT: u16 = 47232;
@@ -309,109 +308,9 @@ fn resident_overlay_args(settings: &Settings) -> Vec<String> {
         settings.overlay.show_magnifier.to_string(),
         "--magnifier-scale".to_owned(),
         settings.overlay.magnifier_scale.to_string(),
+        "--pin-hotkey".to_owned(),
+        settings.hotkeys.pin_selection.clone(),
     ]
-}
-
-#[derive(Debug)]
-struct SnapshotCapture {
-    mapping_name: String,
-    byte_len: usize,
-    width: u32,
-    height: u32,
-    bounds: shared_models::Rect,
-    regions: Vec<CaptureWindowRegion>,
-    mapping: NamedSharedMemory,
-}
-
-fn capture_snapshot(include_cursor: bool) -> Result<SnapshotCapture, String> {
-    let bounds = platform_win32::virtual_screen_bounds();
-    log::info!("capturing snapshot bounds={bounds:?} include_cursor={include_cursor}");
-    let request = CaptureRequest {
-        region: Some(bounds),
-        include_cursor,
-    };
-    let regions = capture_window_regions(bounds);
-    let frame = capture_with_preferred_backend(request)?;
-    let rgba = frame_to_rgba(&frame)?;
-    let byte_len = rgba.len();
-    let mapping_name = snapshot_mapping_name();
-    let mapping =
-        create_named_shared_memory(&mapping_name, &rgba).map_err(|error| error.to_string())?;
-
-    log::info!(
-        "snapshot captured size={}x{} bytes={} regions={}",
-        frame.pixel_size.width,
-        frame.pixel_size.height,
-        byte_len,
-        regions.len()
-    );
-
-    Ok(SnapshotCapture {
-        mapping_name,
-        byte_len,
-        width: frame.pixel_size.width.round().max(1.0) as u32,
-        height: frame.pixel_size.height.round().max(1.0) as u32,
-        bounds,
-        regions,
-        mapping,
-    })
-}
-
-fn capture_with_preferred_backend(
-    request: CaptureRequest,
-) -> Result<platform_win32::CapturedFrame, String> {
-    let backends: [(&str, &dyn WindowsCaptureBackend); 3] = [
-        ("wgc", &WgcCaptureBackend),
-        ("dxgi", &DxgiCaptureBackend),
-        ("gdi", &GdiCaptureBackend),
-    ];
-    let mut last_error = None;
-
-    for (name, backend) in backends {
-        match backend.capture(request.clone()) {
-            Ok(frame) => {
-                log::info!("screenshot backend succeeded backend={name}");
-                return Ok(frame);
-            }
-            Err(error) if error.code == "not_implemented" => {
-                log::info!("screenshot backend not implemented backend={name}");
-                last_error = Some(error.to_string());
-            }
-            Err(error) => {
-                log::warn!("screenshot backend failed backend={name}: {error}");
-                last_error = Some(error.to_string());
-            }
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| "no screenshot backend is available".to_owned()))
-}
-
-fn frame_to_rgba(frame: &platform_win32::CapturedFrame) -> Result<Vec<u8>, String> {
-    match frame.format {
-        ImageFormat::Rgba8 => Ok(frame.bytes.clone()),
-        ImageFormat::Bgra8 => Ok(bgra_to_rgba(&frame.bytes)),
-        ImageFormat::Png => Err("PNG screenshot frames cannot be shared as raw memory".to_owned()),
-    }
-}
-
-fn bgra_to_rgba(bytes: &[u8]) -> Vec<u8> {
-    bytes
-        .chunks_exact(4)
-        .flat_map(|pixel| [pixel[2], pixel[1], pixel[0], 255])
-        .collect()
-}
-
-fn snapshot_mapping_name() -> String {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_micros())
-        .unwrap_or_default();
-    format!(
-        "Local\\snap_pin_snapshot_{}_{}",
-        std::process::id(),
-        timestamp
-    )
 }
 
 #[derive(Debug, Serialize)]
@@ -425,6 +324,7 @@ struct OverlayCaptureCommand {
     border_color: String,
     show_magnifier: bool,
     magnifier_scale: f32,
+    pin_hotkey: String,
 }
 
 impl OverlayCaptureCommand {
@@ -449,6 +349,7 @@ impl OverlayCaptureCommand {
             border_color: settings.capture.border_color.clone(),
             show_magnifier: settings.overlay.show_magnifier,
             magnifier_scale: settings.overlay.magnifier_scale,
+            pin_hotkey: settings.hotkeys.pin_selection.clone(),
         }
     }
 }
@@ -491,126 +392,4 @@ struct SharedSnapshotCommand {
 struct OverlayControlResponse {
     kind: String,
     message: Option<String>,
-}
-
-enum OverlayLaunch {
-    Executable(PathBuf),
-    Cargo { workspace: PathBuf },
-}
-
-impl OverlayLaunch {
-    fn description(&self) -> String {
-        match self {
-            OverlayLaunch::Executable(path) => format!("executable {}", path.display()),
-            OverlayLaunch::Cargo { workspace } => format!("cargo run in {}", workspace.display()),
-        }
-    }
-
-    fn command(&self, overlay_args: Vec<String>) -> std::process::Command {
-        match self {
-            OverlayLaunch::Executable(path) => {
-                let mut command = std::process::Command::new(path);
-                command.args(overlay_args);
-                command
-            }
-            OverlayLaunch::Cargo { workspace } => {
-                let mut command = std::process::Command::new("cargo");
-                command
-                    .arg("run")
-                    .arg("-p")
-                    .arg("egui_overlay")
-                    .arg("--")
-                    .args(overlay_args)
-                    .current_dir(workspace);
-                command
-            }
-        }
-    }
-}
-
-fn overlay_launch(app: &AppHandle) -> Result<OverlayLaunch, String> {
-    let current_exe = std::env::current_exe().map_err(|error| error.to_string())?;
-    let file_name = executable_name("egui_overlay");
-
-    if let Some(workspace) = find_workspace_root(&current_exe) {
-        if is_workspace_debug_executable(&current_exe, &workspace) {
-            log::info!(
-                "using cargo overlay launch current_exe={} workspace={}",
-                current_exe.display(),
-                workspace.display()
-            );
-            return Ok(OverlayLaunch::Cargo { workspace });
-        }
-    }
-
-    for directory in candidate_directories(app, &current_exe) {
-        let candidate = directory.join(&file_name);
-        if candidate.exists() {
-            log::info!("using overlay executable {}", candidate.display());
-            return Ok(OverlayLaunch::Executable(candidate));
-        }
-    }
-
-    if let Some(workspace) = find_workspace_root(&current_exe) {
-        log::info!(
-            "falling back to cargo overlay launch workspace={}",
-            workspace.display()
-        );
-        return Ok(OverlayLaunch::Cargo { workspace });
-    }
-
-    Ok(OverlayLaunch::Executable(
-        current_exe.with_file_name(file_name),
-    ))
-}
-
-fn is_workspace_debug_executable(current_exe: &Path, workspace: &Path) -> bool {
-    current_exe.starts_with(workspace.join("target").join("debug"))
-}
-
-fn candidate_directories(app: &AppHandle, current_exe: &PathBuf) -> Vec<PathBuf> {
-    let mut directories = Vec::new();
-
-    if let Some(parent) = current_exe.parent() {
-        directories.push(parent.to_path_buf());
-    }
-
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        directories.push(resource_dir);
-    }
-
-    directories
-}
-
-fn executable_name(name: &str) -> String {
-    #[cfg(windows)]
-    {
-        format!("{name}.exe")
-    }
-
-    #[cfg(not(windows))]
-    {
-        name.to_owned()
-    }
-}
-
-fn find_workspace_root(start: &Path) -> Option<PathBuf> {
-    let mut current = start.parent();
-    while let Some(directory) = current {
-        let manifest = directory.join("Cargo.toml");
-        let apps_dir = directory.join("apps");
-        if manifest.exists() && apps_dir.exists() {
-            return Some(directory.to_path_buf());
-        }
-
-        current = directory.parent();
-    }
-
-    std::env::current_dir().ok().and_then(|cwd| {
-        if cwd.join("Cargo.toml").exists() && cwd.join("apps").exists() {
-            Some(cwd)
-        } else {
-            None
-        }
-    })
 }

@@ -2,8 +2,8 @@ use core_service::CoreService;
 use shared_models::{CoreCommand, CoreEvent, Settings};
 use tauri::AppHandle;
 
-use crate::ipc_bridge::DesktopIpcBridge;
-use crate::settings_store;
+use crate::ipc::bridge::DesktopIpcBridge;
+use crate::settings::store;
 
 pub struct ShellState {
     core: CoreService,
@@ -22,7 +22,7 @@ impl Default for ShellState {
 impl ShellState {
     pub fn from_store(app: &AppHandle) -> Self {
         let mut state = Self::default();
-        if let Some(settings) = settings_store::load(app) {
+        if let Some(settings) = store::load(app) {
             log::info!("applying persisted settings");
             state.update_settings(Settings::from(settings));
         } else {

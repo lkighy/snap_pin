@@ -83,8 +83,14 @@ pub struct TranslationSettingsDto {
 #[serde(rename_all = "camelCase")]
 pub struct HotkeySettingsDto {
     pub capture: String,
+    #[serde(default = "default_pin_selection_hotkey")]
+    pub pin_selection: String,
     pub toggle_pins_click_through: String,
     pub show_history: String,
+}
+
+fn default_pin_selection_hotkey() -> String {
+    "Ctrl+Shift+X".to_owned()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +142,7 @@ impl From<&Settings> for AppSettingsDto {
             },
             hotkeys: HotkeySettingsDto {
                 capture: settings.hotkeys.capture.clone(),
+                pin_selection: settings.hotkeys.pin_selection.clone(),
                 toggle_pins_click_through: settings.hotkeys.toggle_pins_click_through.clone(),
                 show_history: settings.hotkeys.show_history.clone(),
             },
@@ -186,6 +193,7 @@ impl From<AppSettingsDto> for Settings {
         settings.translate.auto_translate_after_ocr = dto.translation.auto_translate_after_ocr;
 
         settings.hotkeys.capture = dto.hotkeys.capture;
+        settings.hotkeys.pin_selection = dto.hotkeys.pin_selection;
         settings.hotkeys.toggle_pins_click_through = dto.hotkeys.toggle_pins_click_through;
         settings.hotkeys.show_history = dto.hotkeys.show_history;
 

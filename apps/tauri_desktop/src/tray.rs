@@ -52,7 +52,7 @@ pub fn install(app: &mut tauri::App) -> tauri::Result<()> {
             }
             "capture" => {
                 log::info!("tray capture selected");
-                if let Err(error) = crate::capture_launcher::launch_capture_overlay(app) {
+                if let Err(error) = crate::capture::launcher::launch_capture_overlay(app) {
                     log::error!("failed to launch capture overlay from tray: {error}");
                 }
             }

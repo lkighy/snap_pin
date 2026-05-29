@@ -3,10 +3,10 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
-use crate::capture_launcher;
-use crate::commands;
-use crate::settings_dto::AppSettingsDto;
-use crate::settings_store;
+use super::mvp;
+use crate::capture::launcher;
+use crate::settings::dto::AppSettingsDto;
+use crate::settings::store;
 use crate::shell_state::ShellState;
 use crate::tray;
 
@@ -72,10 +72,10 @@ pub fn save_settings(
         AppSettingsDto::from(state.settings())
     };
 
-    settings_store::save(&app, &saved)?;
+    store::save(&app, &saved)?;
     tray::refresh(&app, &saved.interface.language).map_err(|error| error.to_string())?;
-    capture_launcher::register_capture_hotkey_for_settings(&app, &settings)?;
-    if let Err(error) = capture_launcher::ensure_overlay_resident(&app) {
+    launcher::register_capture_hotkey_for_settings(&app, &settings)?;
+    if let Err(error) = launcher::ensure_overlay_resident(&app) {
         log::error!("failed to ensure resident overlay after settings save: {error}");
     }
     log::info!("tauri command save_settings completed");
@@ -86,7 +86,7 @@ pub fn save_settings(
 pub fn run_mvp_flow(state: State<'_, Mutex<ShellState>>) -> Result<MvpRunResponse, String> {
     log::info!("tauri command run_mvp_flow started");
     let mut state = state.lock().map_err(|_| "shell state lock poisoned")?;
-    let events = commands::run_mvp_capture_ocr_translate(&mut state)
+    let events = mvp::run_mvp_capture_ocr_translate(&mut state)
         .into_iter()
         .map(|event| format!("{event:?}"))
         .collect();
@@ -105,13 +105,13 @@ pub fn start_capture(
 ) -> Result<CaptureResponse, String> {
     log::info!("tauri command start_capture started");
     let mut state = state.lock().map_err(|_| "shell state lock poisoned")?;
-    let events = commands::start_capture(&mut state)
+    let events = mvp::start_capture(&mut state)
         .into_iter()
         .map(|event| format!("{event:?}"))
         .collect();
     drop(state);
 
-    capture_launcher::launch_capture_overlay(&app)?;
+    launcher::launch_capture_overlay(&app)?;
 
     log::info!("tauri command start_capture completed");
     Ok(CaptureResponse { events })

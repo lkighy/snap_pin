@@ -1,13 +1,11 @@
 #![allow(dead_code)]
 
-mod capture_launcher;
+mod capture;
 mod commands;
-mod ipc_bridge;
+mod ipc;
 mod logging;
-mod settings_dto;
-mod settings_store;
+mod settings;
 mod shell_state;
-mod tauri_commands;
 mod tray;
 
 use std::sync::Mutex;
@@ -27,11 +25,11 @@ fn main() {
     log::info!("starting desktop shell");
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
-            tauri_commands::app_status,
-            tauri_commands::get_settings,
-            tauri_commands::save_settings,
-            tauri_commands::run_mvp_flow,
-            tauri_commands::start_capture
+            commands::tauri::app_status,
+            commands::tauri::get_settings,
+            commands::tauri::save_settings,
+            commands::tauri::run_mvp_flow,
+            commands::tauri::start_capture
         ])
         .setup(|app| {
             log::info!("tauri setup started");
@@ -40,7 +38,7 @@ fn main() {
             app.manage(Mutex::new(state));
             app.manage(Mutex::new(None::<platform_win32::HotkeyListener>));
             app.manage(Mutex::new(
-                capture_launcher::CaptureOverlayRuntime::default(),
+                capture::launcher::CaptureOverlayRuntime::default(),
             ));
             tray::install(app)?;
             if let Some(window) = app.get_webview_window("main") {
@@ -52,10 +50,10 @@ fn main() {
             } else {
                 log::error!("main window not found during startup");
             }
-            if let Err(error) = capture_launcher::register_capture_hotkey(&app_handle) {
+            if let Err(error) = capture::launcher::register_capture_hotkey(&app_handle) {
                 log::error!("failed to register capture hotkey: {error}");
             }
-            if let Err(error) = capture_launcher::ensure_overlay_resident(&app_handle) {
+            if let Err(error) = capture::launcher::ensure_overlay_resident(&app_handle) {
                 log::error!("failed to ensure resident overlay: {error}");
             }
             log::info!("tauri setup completed");
