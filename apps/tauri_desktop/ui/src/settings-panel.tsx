@@ -228,6 +228,11 @@ export function SettingsPanel({
             updateSettings("ocr", { autoRunAfterCapture })
           }
         />
+        <ModelTile
+          label={t("model.ocrDefault")}
+          value="ppocr-v5-mobile-mnn"
+          configuredLabel={t("model.configured")}
+        />
       </FieldGrid>
     );
   }
@@ -257,6 +262,11 @@ export function SettingsPanel({
           onCheckedChange={(autoTranslateAfterOcr) =>
             updateSettings("translation", { autoTranslateAfterOcr })
           }
+        />
+        <ModelTile
+          label={t("model.translationDefault")}
+          value="opus-mt-en-zh-ct2-int8"
+          configuredLabel={t("model.configured")}
         />
       </FieldGrid>
     );
@@ -321,18 +331,5 @@ export function SettingsPanel({
     );
   }
 
-  return (
-    <div className="grid grid-cols-2 gap-3">
-      <ModelTile
-        label={t("model.ocrDefault")}
-        value="ppocr-v5-mobile-mnn"
-        configuredLabel={t("model.configured")}
-      />
-      <ModelTile
-        label={t("model.translationDefault")}
-        value="opus-mt-en-zh-ct2-int8"
-        configuredLabel={t("model.configured")}
-      />
-    </div>
-  );
+  return null;
 }

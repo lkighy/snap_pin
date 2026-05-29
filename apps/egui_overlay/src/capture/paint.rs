@@ -303,7 +303,7 @@ fn draw_toolbar_icon(painter: &Painter, rect: EguiRect, action: CaptureAction, c
     match action {
         CaptureAction::Pin => draw_pin_icon(painter, rect, color),
         CaptureAction::Copy => draw_copy_icon(painter, rect, color),
-        CaptureAction::Save => draw_save_icon(painter, rect, color),
+        CaptureAction::Save | CaptureAction::Editor => draw_save_icon(painter, rect, color),
     }
 }
 

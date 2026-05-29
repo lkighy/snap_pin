@@ -21,35 +21,12 @@ import {
   Translator,
 } from "@/i18n";
 
-export function StatusCard({
-  label,
-  value,
-  tone = "default",
-}: {
-  label: string;
-  value: string;
-  tone?: "default" | "danger";
-}) {
+export function FieldGrid({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-lg border bg-card p-3 shadow-sm">
-      <div className="mb-2 flex items-center justify-between">
-        <span className="text-xs font-medium uppercase text-muted-foreground">
-          {label}
-        </span>
-        <span
-          className={cn(
-            "size-2 rounded-full bg-emerald-500",
-            tone === "danger" && "bg-destructive",
-          )}
-        />
-      </div>
-      <strong className="block truncate text-sm font-semibold">{value}</strong>
+    <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2">
+      {children}
     </div>
   );
-}
-
-export function FieldGrid({ children }: { children: ReactNode }) {
-  return <div className="grid grid-cols-2 gap-4">{children}</div>;
 }
 
 function FieldFrame({
@@ -60,9 +37,9 @@ function FieldFrame({
   children: ReactNode;
 }) {
   return (
-    <div className="rounded-md border bg-background/70 p-3">
-      <Label className="text-xs text-muted-foreground">{label}</Label>
-      <div className="mt-2">{children}</div>
+    <div className="min-w-0 rounded-md border bg-background/70 p-3">
+      <Label className="break-words text-xs text-muted-foreground">{label}</Label>
+      <div className="mt-2 min-w-0">{children}</div>
     </div>
   );
 }
@@ -77,9 +54,9 @@ export function SwitchField({
   onCheckedChange: (checked: boolean) => void;
 }) {
   return (
-    <div className="flex h-[62px] items-center justify-between gap-3 rounded-md border bg-background/70 px-3">
-      <Label className="text-sm">{label}</Label>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+    <div className="flex min-h-[62px] min-w-0 items-center justify-between gap-3 rounded-md border bg-background/70 px-3 py-2">
+      <Label className="min-w-0 break-words text-sm">{label}</Label>
+      <Switch className="shrink-0" checked={checked} onCheckedChange={onCheckedChange} />
     </div>
   );
 }
@@ -155,7 +132,7 @@ export function HotkeyField({
         aria-pressed={recording}
         title={t("hotkey.clickToRecord")}
         className={cn(
-          "w-full justify-start font-mono",
+          "w-full min-w-0 justify-start font-mono",
           recording &&
             "border-primary bg-accent text-accent-foreground ring-2 ring-ring",
         )}
@@ -167,7 +144,7 @@ export function HotkeyField({
         onKeyDown={handleKeyDown}
       >
         <Keyboard className="size-4 text-muted-foreground" />
-        <span>{recording ? t("hotkey.recording") : value}</span>
+        <span className="truncate">{recording ? t("hotkey.recording") : value}</span>
       </Button>
     </FieldFrame>
   );
@@ -274,7 +251,7 @@ export function RangeField({
 }) {
   return (
     <FieldFrame label={label}>
-      <div className="flex items-center gap-3">
+      <div className="flex min-w-0 items-center gap-3">
         <input
           className="accented-range"
           type="range"
@@ -284,7 +261,7 @@ export function RangeField({
           value={value}
           onChange={(event) => onValueChange(Number(event.target.value))}
         />
-        <Badge variant="secondary" className="min-w-12 justify-center">
+        <Badge variant="secondary" className="min-w-12 shrink-0 justify-center">
           {value}
         </Badge>
       </div>
@@ -303,14 +280,16 @@ export function ColorField({
 }) {
   return (
     <FieldFrame label={label}>
-      <div className="flex items-center gap-3">
+      <div className="flex min-w-0 items-center gap-3">
         <input
           type="color"
           value={value}
-          className="h-9 w-14 rounded-md border border-input bg-background p-1"
+          className="h-9 w-14 shrink-0 rounded-md border border-input bg-background p-1"
           onChange={(event) => onValueChange(event.target.value)}
         />
-        <span className="text-sm font-medium text-muted-foreground">{value}</span>
+        <span className="min-w-0 truncate text-sm font-medium text-muted-foreground">
+          {value}
+        </span>
       </div>
     </FieldFrame>
   );
@@ -326,11 +305,11 @@ export function LanguageSelect({
   t: Translator;
 }) {
   return (
-    <div className="flex items-center gap-2">
+    <div className="min-w-0">
       <Label className="sr-only">{t("language.label")}</Label>
       <Select value={locale} onValueChange={(value) => onLocaleChange(value as Locale)}>
-        <SelectTrigger className="w-[132px]">
-          <Languages className="size-4 text-muted-foreground" />
+        <SelectTrigger className="w-[132px] max-w-full">
+          <Languages className="size-4 shrink-0 text-muted-foreground" />
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -359,7 +338,7 @@ export function SelectField({
   return (
     <FieldFrame label={label}>
       <Select value={value} onValueChange={onValueChange}>
-        <SelectTrigger>
+        <SelectTrigger className="min-w-0">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -384,13 +363,13 @@ export function ModelTile({
   configuredLabel: string;
 }) {
   return (
-    <div className="rounded-md border bg-background/70 p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-xs font-medium text-muted-foreground">{label}</p>
-          <p className="mt-2 text-sm font-semibold">{value}</p>
+    <div className="min-w-0 rounded-md border bg-background/70 p-4">
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="break-words text-xs font-medium text-muted-foreground">{label}</p>
+          <p className="mt-2 break-all text-sm font-semibold">{value}</p>
         </div>
-        <Settings2 className="size-4 text-muted-foreground" />
+        <Settings2 className="size-4 shrink-0 text-muted-foreground" />
       </div>
       <Separator className="my-4" />
       <Badge variant="secondary">{configuredLabel}</Badge>

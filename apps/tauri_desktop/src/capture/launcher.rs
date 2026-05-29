@@ -10,7 +10,7 @@ use platform_win32::{
     CaptureWindowRegion, HotkeyListener, HotkeyRegistration, NamedSharedMemory, listen_for_hotkey,
 };
 use serde::{Deserialize, Serialize};
-use shared_models::Settings;
+use shared_models::{CaptureCompletionAction, Settings};
 use tauri::{AppHandle, Manager};
 
 use super::overlay_launch::overlay_launch;
@@ -64,6 +64,10 @@ pub fn launch_capture_overlay_for_settings(
         settings.interface.language
     );
     ensure_overlay_resident_for_settings(app, settings)?;
+
+    if settings.capture.capture_delay_ms > 0 {
+        thread::sleep(Duration::from_millis(settings.capture.capture_delay_ms));
+    }
 
     let snapshot = capture_snapshot(settings.capture.include_cursor)?;
     let command = OverlayCaptureCommand::from_settings(settings, &snapshot);
@@ -304,12 +308,24 @@ fn resident_overlay_args(settings: &Settings) -> Vec<String> {
         settings.capture.mask_opacity.to_string(),
         "--border-color".to_owned(),
         settings.capture.border_color.clone(),
+        "--show-size-label".to_owned(),
+        settings.capture.show_size_label.to_string(),
+        "--show-toolbar".to_owned(),
+        settings.capture.show_toolbar.to_string(),
         "--show-magnifier".to_owned(),
         settings.overlay.show_magnifier.to_string(),
         "--magnifier-scale".to_owned(),
         settings.overlay.magnifier_scale.to_string(),
         "--pin-hotkey".to_owned(),
         settings.hotkeys.pin_selection.clone(),
+        "--completion-action".to_owned(),
+        completion_action_name(&settings.capture.completion_action).to_owned(),
+        "--pin-opacity".to_owned(),
+        settings.pin.default_opacity.to_string(),
+        "--pin-zoom-step".to_owned(),
+        settings.pin.zoom_step.to_string(),
+        "--pin-always-on-top".to_owned(),
+        settings.pin.always_on_top.to_string(),
     ]
 }
 
@@ -322,9 +338,15 @@ struct OverlayCaptureCommand {
     language: String,
     mask_opacity: f32,
     border_color: String,
+    show_size_label: bool,
+    show_toolbar: bool,
     show_magnifier: bool,
     magnifier_scale: f32,
     pin_hotkey: String,
+    completion_action: String,
+    pin_opacity: f32,
+    pin_zoom_step: f32,
+    pin_always_on_top: bool,
 }
 
 impl OverlayCaptureCommand {
@@ -347,10 +369,26 @@ impl OverlayCaptureCommand {
             language: settings.interface.language.clone(),
             mask_opacity: settings.capture.mask_opacity,
             border_color: settings.capture.border_color.clone(),
+            show_size_label: settings.capture.show_size_label,
+            show_toolbar: settings.capture.show_toolbar,
             show_magnifier: settings.overlay.show_magnifier,
             magnifier_scale: settings.overlay.magnifier_scale,
             pin_hotkey: settings.hotkeys.pin_selection.clone(),
+            completion_action: completion_action_name(&settings.capture.completion_action)
+                .to_owned(),
+            pin_opacity: settings.pin.default_opacity,
+            pin_zoom_step: settings.pin.zoom_step,
+            pin_always_on_top: settings.pin.always_on_top,
         }
+    }
+}
+
+fn completion_action_name(action: &CaptureCompletionAction) -> &'static str {
+    match action {
+        CaptureCompletionAction::Pin => "pin",
+        CaptureCompletionAction::CopyToClipboard => "copy",
+        CaptureCompletionAction::SaveToFile => "save",
+        CaptureCompletionAction::OpenEditor => "editor",
     }
 }
 

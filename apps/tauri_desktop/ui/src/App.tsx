@@ -12,7 +12,6 @@ import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -34,7 +33,7 @@ import {
   Translator,
 } from "@/i18n";
 import { defaultStatus, navItems, SaveStatusKey, ViewId } from "@/app-data";
-import { LanguageSelect, StatusCard } from "@/settings-fields";
+import { LanguageSelect } from "@/settings-fields";
 import { SettingsPanel } from "@/settings-panel";
 
 export function App() {
@@ -195,16 +194,18 @@ export function App() {
   }
 
   const isBusy = busyAction !== null;
+  const showEventLog = activeView === "history";
 
   return (
-    <main className="min-h-screen min-w-[860px] bg-background text-foreground">
-      <header className="flex h-[72px] items-center justify-between border-b bg-card px-5">
-        <div className="flex items-center gap-3">
-          <div className="flex size-10 items-center justify-center rounded-lg border bg-primary text-primary-foreground shadow-sm">
+    <main className="flex h-screen overflow-hidden bg-background text-foreground">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <header className="flex min-h-[72px] shrink-0 flex-wrap items-center justify-between gap-3 border-b bg-card px-5 py-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-lg border bg-primary text-primary-foreground shadow-sm">
             <Sparkles className="size-5" />
           </div>
-          <div>
-            <h1 className="text-xl font-semibold leading-tight tracking-normal">
+          <div className="min-w-0">
+            <h1 className="truncate text-xl font-semibold leading-tight tracking-normal">
               {t("app.name")}
             </h1>
             <p className="mt-1 max-w-[520px] truncate text-sm text-muted-foreground">
@@ -213,11 +214,24 @@ export function App() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+          <div
+            className={cn(
+              "flex h-9 min-w-0 items-center gap-2 rounded-md border bg-background px-3 text-sm shadow-sm",
+              (saveStatus === "state.loadFailed" ||
+                saveStatus === "state.saveFailed") &&
+                "border-destructive/35 bg-destructive/10 text-destructive",
+            )}
+          >
+            <span className="font-medium">{t("status.settings")}</span>
+            <span className="text-muted-foreground">/</span>
+            <span className="truncate">{t(saveStatus)}</span>
+          </div>
           <LanguageSelect locale={locale} onLocaleChange={handleLocaleChange} t={t} />
           <Button
             type="button"
             variant="outline"
+            className="min-w-0 shrink"
             onClick={handleStartCapture}
             disabled={isBusy}
           >
@@ -226,21 +240,26 @@ export function App() {
             ) : (
               <Camera />
             )}
-            {t("button.startCapture")}
+            <span className="truncate">{t("button.startCapture")}</span>
           </Button>
-          <Button type="button" onClick={handleRunMvpFlow} disabled={isBusy}>
+          <Button
+            type="button"
+            className="min-w-0 shrink"
+            onClick={handleRunMvpFlow}
+            disabled={isBusy}
+          >
             {busyAction === "mvp" ? (
               <Loader2 className="animate-spin" />
             ) : (
               <Wand2 />
             )}
-            {t("button.runOcrTranslate")}
+            <span className="truncate">{t("button.runOcrTranslate")}</span>
           </Button>
         </div>
       </header>
 
-      <div className="grid min-h-[calc(100vh-72px)] grid-cols-[212px_1fr]">
-        <aside className="border-r bg-muted/35 p-3">
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(150px,184px)_minmax(0,1fr)] lg:grid-cols-[212px_minmax(0,1fr)]">
+        <aside className="min-h-0 min-w-0 overflow-y-auto border-r bg-muted/35 p-3">
           <nav className="grid gap-1" aria-label={t("nav.settings")}>
             {navItems.map((item) => {
               const Icon = item.icon;
@@ -250,42 +269,22 @@ export function App() {
                   key={item.id}
                   type="button"
                   className={cn(
-                    "flex h-9 w-full items-center gap-3 rounded-md px-3 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-background hover:text-foreground",
+                    "flex h-9 w-full min-w-0 items-center gap-3 rounded-md px-3 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-background hover:text-foreground",
                     selected &&
                       "bg-background text-foreground shadow-sm ring-1 ring-border",
                   )}
                   onClick={() => setActiveView(item.id)}
                 >
-                  <Icon className="size-4" />
-                  <span>{t(item.labelKey)}</span>
+                  <Icon className="size-4 shrink-0" />
+                  <span className="truncate">{t(item.labelKey)}</span>
                 </button>
               );
             })}
           </nav>
         </aside>
 
-        <section className="grid content-start gap-4 p-4">
-          <div className="grid grid-cols-[1.2fr_1fr_0.8fr] gap-3">
-            <StatusCard
-              label={t("status.models")}
-              value={translateStatusSummary(status.modelSummary, locale, t)}
-            />
-            <StatusCard
-              label={t("status.history")}
-              value={translateStatusSummary(status.historySummary, locale, t)}
-            />
-            <StatusCard
-              label={t("status.settings")}
-              value={t(saveStatus)}
-              tone={
-                saveStatus === "state.loadFailed" ||
-                saveStatus === "state.saveFailed"
-                  ? "danger"
-                  : "default"
-              }
-            />
-          </div>
-
+        <section className="min-h-0 min-w-0 overflow-y-auto p-4">
+          <div className="grid content-start gap-4">
           {error ? (
             <div className="rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {error}
@@ -293,18 +292,16 @@ export function App() {
           ) : null}
 
           <form onSubmit={handleSave}>
-            <Card className="min-h-[360px]">
-              <CardHeader className="flex-row items-center justify-between space-y-0">
-                <div>
-                  <CardTitle>{activeTitle}</CardTitle>
-                  <CardDescription>
-                    {settings ? t("state.ready") : t("state.loading")}
-                  </CardDescription>
+            <Card className="min-h-[360px] min-w-0 overflow-hidden">
+              <CardHeader className="flex-row flex-wrap items-center justify-between gap-3 space-y-0">
+                <div className="min-w-0">
+                  <CardTitle className="truncate">{activeTitle}</CardTitle>
                 </div>
-                {activeView === "models" ? (
+                <div className="flex min-w-0 flex-wrap justify-end gap-2">
                   <Button
                     type="button"
                     variant="outline"
+                    className="min-w-0 shrink"
                     onClick={refreshAll}
                     disabled={isBusy}
                   >
@@ -313,18 +310,21 @@ export function App() {
                     ) : (
                       <RefreshCw />
                     )}
-                    {t("button.refresh")}
+                    <span className="truncate">{t("button.refresh")}</span>
                   </Button>
-                ) : (
-                  <Button type="submit" disabled={!settings || isBusy}>
+                  <Button
+                    type="submit"
+                    className="min-w-0 shrink"
+                    disabled={!settings || isBusy}
+                  >
                     {busyAction === "save" ? (
                       <Loader2 className="animate-spin" />
                     ) : (
                       <Save />
                     )}
-                    {t("button.saveSettings")}
+                    <span className="truncate">{t("button.saveSettings")}</span>
                   </Button>
-                )}
+                </div>
               </CardHeader>
               <CardContent>
                 {settings ? (
@@ -344,20 +344,26 @@ export function App() {
             </Card>
           </form>
 
-          <Card>
-            <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
-              <CardTitle>{t("events.title")}</CardTitle>
-              <Badge variant="outline">
-                {t("events.entries", { count: eventLog.length })}
-              </Badge>
-            </CardHeader>
-            <CardContent>
-              <pre className="max-h-52 min-h-32 overflow-auto rounded-md bg-zinc-950 p-3 text-xs leading-6 text-zinc-100">
-                {eventLog.length > 0 ? eventLog.join("\n") : t("events.none")}
-              </pre>
-            </CardContent>
-          </Card>
+          {showEventLog ? (
+            <Card className="min-w-0 overflow-hidden">
+              <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
+                <CardTitle className="min-w-0 truncate">
+                  {t("events.title")}
+                </CardTitle>
+                <Badge variant="outline">
+                  {t("events.entries", { count: eventLog.length })}
+                </Badge>
+              </CardHeader>
+              <CardContent>
+                <pre className="max-h-52 min-h-32 overflow-auto rounded-md bg-zinc-950 p-3 text-xs leading-6 text-zinc-100">
+                  {eventLog.length > 0 ? eventLog.join("\n") : t("events.none")}
+                </pre>
+              </CardContent>
+            </Card>
+          ) : null}
+          </div>
         </section>
+      </div>
       </div>
     </main>
   );

@@ -15,9 +15,15 @@ pub(crate) struct CliArgs {
     pub(crate) include_cursor: bool,
     pub(crate) mask_opacity: f32,
     pub(crate) border_color: Color32,
+    pub(crate) show_size_label: bool,
+    pub(crate) show_toolbar: bool,
     pub(crate) show_magnifier: bool,
     pub(crate) magnifier_scale: f32,
     pub(crate) pin_hotkey: String,
+    pub(crate) completion_action: String,
+    pub(crate) pin_opacity: f32,
+    pub(crate) pin_zoom_step: f32,
+    pub(crate) pin_always_on_top: bool,
     pub(crate) resident: bool,
     pub(crate) control_port: u16,
 }
@@ -37,9 +43,15 @@ impl CliArgs {
             include_cursor: false,
             mask_opacity: 0.46,
             border_color: Color32::from_rgb(47, 138, 163),
+            show_size_label: true,
+            show_toolbar: true,
             show_magnifier: true,
             magnifier_scale: 2.0,
             pin_hotkey: "Ctrl+Shift+X".to_owned(),
+            completion_action: "pin".to_owned(),
+            pin_opacity: 1.0,
+            pin_zoom_step: 0.1,
+            pin_always_on_top: true,
             resident: false,
             control_port: 47232,
         };
@@ -72,6 +84,12 @@ impl CliArgs {
                         parsed.border_color = color;
                     }
                 }
+                "--show-size-label" => {
+                    parsed.show_size_label = parse_next(&mut args, parsed.show_size_label)
+                }
+                "--show-toolbar" => {
+                    parsed.show_toolbar = parse_next(&mut args, parsed.show_toolbar)
+                }
                 "--show-magnifier" => {
                     parsed.show_magnifier = parse_next(&mut args, parsed.show_magnifier)
                 }
@@ -79,12 +97,24 @@ impl CliArgs {
                     parsed.magnifier_scale = parse_next(&mut args, parsed.magnifier_scale)
                 }
                 "--pin-hotkey" => parsed.pin_hotkey = parse_next(&mut args, parsed.pin_hotkey),
+                "--completion-action" => {
+                    parsed.completion_action = parse_next(&mut args, parsed.completion_action)
+                }
+                "--pin-opacity" => parsed.pin_opacity = parse_next(&mut args, parsed.pin_opacity),
+                "--pin-zoom-step" => {
+                    parsed.pin_zoom_step = parse_next(&mut args, parsed.pin_zoom_step)
+                }
+                "--pin-always-on-top" => {
+                    parsed.pin_always_on_top = parse_next(&mut args, parsed.pin_always_on_top)
+                }
                 _ => {}
             }
         }
 
         parsed.mask_opacity = parsed.mask_opacity.clamp(0.0, 0.9);
         parsed.magnifier_scale = parsed.magnifier_scale.clamp(1.0, 6.0);
+        parsed.pin_opacity = parsed.pin_opacity.clamp(0.2, 1.0);
+        parsed.pin_zoom_step = parsed.pin_zoom_step.clamp(0.05, 0.5);
         parsed.width = parsed.width.max(64.0);
         parsed.height = parsed.height.max(64.0);
         parsed

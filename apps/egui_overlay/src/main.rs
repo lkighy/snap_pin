@@ -54,7 +54,6 @@ const SAVE_CANCELED_CODE: &str = "save_canceled";
 const MAGNIFIER_SAMPLE_SIZE: i32 = 17;
 const PIN_OPACITY_STEP: f32 = 0.05;
 const PIN_MIN_OPACITY: f32 = 0.2;
-const PIN_ZOOM_FACTOR: f32 = 1.1;
 const PIN_MIN_WIDTH: f32 = 96.0;
 const PIN_MIN_HEIGHT: f32 = 72.0;
 const PIN_MAX_SIDE: f32 = 8192.0;
@@ -115,15 +114,22 @@ fn native_options(args: &CliArgs) -> NativeOptions {
                     .with_visible(true)
             }
         }
-        OverlayRunMode::Pin => ViewportBuilder::default()
-            .with_decorations(false)
-            .with_transparent(true)
-            .with_always_on_top()
-            .with_resizable(true)
-            .with_taskbar(false)
-            .with_position([args.x, args.y])
-            .with_inner_size([args.width, args.height])
-            .with_min_inner_size([96.0, 72.0]),
+        OverlayRunMode::Pin => {
+            let level = if args.pin_always_on_top {
+                WindowLevel::AlwaysOnTop
+            } else {
+                WindowLevel::Normal
+            };
+            ViewportBuilder::default()
+                .with_decorations(false)
+                .with_transparent(true)
+                .with_window_level(level)
+                .with_resizable(true)
+                .with_taskbar(false)
+                .with_position([args.x, args.y])
+                .with_inner_size([args.width, args.height])
+                .with_min_inner_size([96.0, 72.0])
+        }
     };
 
     NativeOptions {
@@ -138,9 +144,15 @@ struct CaptureOverlayApp {
     screen_origin: Point,
     mask_opacity: f32,
     border_color: Color32,
+    show_size_label: bool,
+    show_toolbar: bool,
     show_magnifier: bool,
     magnifier_scale: f32,
     pin_hotkey: String,
+    completion_action: CaptureAction,
+    pin_opacity: f32,
+    pin_zoom_step: f32,
+    pin_always_on_top: bool,
     resident: bool,
     command_queue: Option<OverlayCommandQueue>,
     snapshot_path: Option<PathBuf>,
@@ -184,9 +196,15 @@ impl CaptureOverlayApp {
             screen_origin: Point::new(args.x, args.y),
             mask_opacity: args.mask_opacity,
             border_color: args.border_color,
+            show_size_label: args.show_size_label,
+            show_toolbar: args.show_toolbar,
             show_magnifier: args.show_magnifier,
             magnifier_scale: args.magnifier_scale,
             pin_hotkey: args.pin_hotkey,
+            completion_action: CaptureAction::from_name(&args.completion_action),
+            pin_opacity: args.pin_opacity,
+            pin_zoom_step: args.pin_zoom_step,
+            pin_always_on_top: args.pin_always_on_top,
             resident: args.resident,
             command_queue,
             snapshot_path: args.snapshot,
@@ -242,7 +260,12 @@ impl CaptureOverlayApp {
             return;
         }
 
-        if ctx.input(|input| input.key_pressed(Key::Enter) || input.key_pressed(Key::P)) {
+        if ctx.input(|input| input.key_pressed(Key::Enter)) {
+            self.finish_selection(ctx);
+            return;
+        }
+
+        if ctx.input(|input| input.key_pressed(Key::P)) {
             self.run_capture_action(ctx, CaptureAction::Pin);
         }
     }
@@ -274,7 +297,10 @@ impl CaptureOverlayApp {
             if let Some(position) = pointer.interact_pos() {
                 let clamped = clamp_pos(position, canvas);
                 if let Some(selection) = self.selection {
-                    if let Some(action) = toolbar_action_at(clamped, canvas, selection, self.text) {
+                    if self.show_toolbar
+                        && let Some(action) =
+                            toolbar_action_at(clamped, canvas, selection, self.text)
+                    {
                         return Some(action);
                     }
 
@@ -346,11 +372,17 @@ impl CaptureOverlayApp {
 
         if let Some(selection) = self.selection {
             draw_selection_mask(painter, canvas, selection, mask_alpha, self.border_color);
-            draw_size_label(painter, selection);
-            draw_toolbar(painter, canvas, selection, self.border_color, self.text);
+            if self.show_size_label {
+                draw_size_label(painter, selection);
+            }
+            if self.show_toolbar {
+                draw_toolbar(painter, canvas, selection, self.border_color, self.text);
+            }
         } else if let Some(region) = self.hovered_region {
             draw_selection_mask(painter, canvas, region, mask_alpha, self.border_color);
-            draw_size_label(painter, region);
+            if self.show_size_label {
+                draw_size_label(painter, region);
+            }
         } else if self.created_at.elapsed() > Duration::from_millis(160) {
             painter.rect_filled(canvas, 0.0, Color32::from_black_alpha(mask_alpha));
             draw_hint(painter, canvas, self.text.drag_hint);
@@ -454,7 +486,7 @@ impl CaptureOverlayApp {
     }
 
     fn finish_selection(&mut self, ctx: &Context) {
-        self.run_capture_action(ctx, CaptureAction::Pin);
+        self.run_capture_action(ctx, self.completion_action);
     }
 
     fn run_capture_action(&mut self, ctx: &Context, action: CaptureAction) {
@@ -494,6 +526,10 @@ impl CaptureOverlayApp {
         let result = match action {
             CaptureAction::Pin => self.capture_selection_to_pin(selection, region),
             CaptureAction::Copy => self.copy_selection_to_clipboard(selection),
+            CaptureAction::Editor => {
+                log::warn!("capture editor action is not implemented; falling back to pin");
+                self.capture_selection_to_pin(selection, region)
+            }
             CaptureAction::Save => unreachable!("save is handled as a deferred modal action"),
         };
 
@@ -599,13 +635,16 @@ impl CaptureOverlayApp {
             cropped.width,
             cropped.height
         );
-        spawn_pin_window(
-            &cropped.path,
-            region.origin.x,
-            region.origin.y,
-            cropped.width as f32,
-            cropped.height as f32,
-        )
+        spawn_pin_window(&PinWindowLaunch {
+            image_path: &cropped.path,
+            x: region.origin.x,
+            y: region.origin.y,
+            width: cropped.width as f32,
+            height: cropped.height as f32,
+            opacity: self.pin_opacity,
+            zoom_step: self.pin_zoom_step,
+            always_on_top: self.pin_always_on_top,
+        })
         .map_err(|error| format!("{}: {error}", self.text.pin_spawn_failed))
     }
 
@@ -716,9 +755,15 @@ impl CaptureOverlayApp {
         self.pending_save = None;
         self.text = OverlayText::new(OverlayLanguage::from_code(&command.language));
         self.mask_opacity = command.mask_opacity.clamp(0.0, 0.9);
+        self.show_size_label = command.show_size_label;
+        self.show_toolbar = command.show_toolbar;
         self.show_magnifier = command.show_magnifier;
         self.magnifier_scale = command.magnifier_scale.clamp(1.0, 6.0);
         self.pin_hotkey = command.pin_hotkey;
+        self.completion_action = CaptureAction::from_name(&command.completion_action);
+        self.pin_opacity = command.pin_opacity.clamp(PIN_MIN_OPACITY, 1.0);
+        self.pin_zoom_step = command.pin_zoom_step.clamp(0.05, 0.5);
+        self.pin_always_on_top = command.pin_always_on_top;
         if let Some(color) = parse_color(&command.border_color) {
             self.border_color = color;
         }
@@ -778,7 +823,7 @@ impl App for CaptureOverlayApp {
                 let canvas = ui.max_rect();
                 let response = ui.interact(canvas, Id::new("capture-canvas"), Sense::drag());
                 if response.double_clicked() {
-                    self.run_capture_action(ctx, CaptureAction::Pin);
+                    self.finish_selection(ctx);
                 }
 
                 self.handle_color_shortcuts(ctx, canvas);
@@ -806,6 +851,18 @@ enum CaptureAction {
     Pin,
     Copy,
     Save,
+    Editor,
+}
+
+impl CaptureAction {
+    fn from_name(value: &str) -> Self {
+        match value {
+            "copy" => Self::Copy,
+            "save" => Self::Save,
+            "editor" => Self::Editor,
+            _ => Self::Pin,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -884,12 +941,28 @@ struct OverlayCaptureCommand {
     language: String,
     mask_opacity: f32,
     border_color: String,
+    #[serde(default = "default_true")]
+    show_size_label: bool,
+    #[serde(default = "default_true")]
+    show_toolbar: bool,
     #[serde(default = "default_show_magnifier")]
     show_magnifier: bool,
     #[serde(default = "default_magnifier_scale")]
     magnifier_scale: f32,
     #[serde(default = "default_pin_hotkey")]
     pin_hotkey: String,
+    #[serde(default = "default_completion_action")]
+    completion_action: String,
+    #[serde(default = "default_pin_opacity")]
+    pin_opacity: f32,
+    #[serde(default = "default_pin_zoom_step")]
+    pin_zoom_step: f32,
+    #[serde(default = "default_true")]
+    pin_always_on_top: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_show_magnifier() -> bool {
@@ -902,6 +975,18 @@ fn default_magnifier_scale() -> f32 {
 
 fn default_pin_hotkey() -> String {
     "Ctrl+Shift+X".to_owned()
+}
+
+fn default_completion_action() -> String {
+    "pin".to_owned()
+}
+
+fn default_pin_opacity() -> f32 {
+    1.0
+}
+
+fn default_pin_zoom_step() -> f32 {
+    0.1
 }
 
 #[derive(Debug, Deserialize)]
@@ -1380,35 +1465,49 @@ fn capture_file_name() -> String {
     )
 }
 
-fn spawn_pin_window(
-    image_path: &PathBuf,
+struct PinWindowLaunch<'a> {
+    image_path: &'a PathBuf,
     x: f32,
     y: f32,
     width: f32,
     height: f32,
-) -> Result<(), String> {
+    opacity: f32,
+    zoom_step: f32,
+    always_on_top: bool,
+}
+
+fn spawn_pin_window(launch: &PinWindowLaunch<'_>) -> Result<(), String> {
     let current_exe = std::env::current_exe().map_err(|error| error.to_string())?;
     log::info!(
-        "spawning pin window exe={} image={} x={} y={} width={} height={}",
+        "spawning pin window exe={} image={} x={} y={} width={} height={} opacity={} zoom_step={} always_on_top={}",
         current_exe.display(),
-        image_path.display(),
-        x,
-        y,
-        width,
-        height
+        launch.image_path.display(),
+        launch.x,
+        launch.y,
+        launch.width,
+        launch.height,
+        launch.opacity,
+        launch.zoom_step,
+        launch.always_on_top
     );
     let child = std::process::Command::new(current_exe)
         .arg("--pin")
         .arg("--image")
-        .arg(image_path)
+        .arg(launch.image_path)
         .arg("--x")
-        .arg(format!("{}", x))
+        .arg(format!("{}", launch.x))
         .arg("--y")
-        .arg(format!("{}", y))
+        .arg(format!("{}", launch.y))
         .arg("--width")
-        .arg(format!("{}", width))
+        .arg(format!("{}", launch.width))
         .arg("--height")
-        .arg(format!("{}", height))
+        .arg(format!("{}", launch.height))
+        .arg("--pin-opacity")
+        .arg(format!("{}", launch.opacity))
+        .arg("--pin-zoom-step")
+        .arg(format!("{}", launch.zoom_step))
+        .arg("--pin-always-on-top")
+        .arg(format!("{}", launch.always_on_top))
         .spawn()
         .map_err(|error| error.to_string())?;
     log::info!("pin window spawned pid={}", child.id());
@@ -1422,6 +1521,7 @@ struct PinWindowApp {
     image_size: Vec2,
     error: Option<String>,
     opacity: f32,
+    zoom_step: f32,
 }
 
 impl PinWindowApp {
@@ -1434,8 +1534,17 @@ impl PinWindowApp {
             texture: None,
             image_size: Vec2::new(args.width, args.height),
             error: None,
-            opacity: 1.0,
+            opacity: args.pin_opacity,
+            zoom_step: args.pin_zoom_step,
         };
+        let level = if args.pin_always_on_top {
+            WindowLevel::AlwaysOnTop
+        } else {
+            WindowLevel::Normal
+        };
+        creation_context
+            .egui_ctx
+            .send_viewport_cmd(ViewportCommand::WindowLevel(level));
         app.load_texture(&creation_context.egui_ctx);
         app
     }
@@ -1517,9 +1626,9 @@ impl PinWindowApp {
         }
 
         let zoom_factor = if scroll > 0.0 {
-            PIN_ZOOM_FACTOR
+            1.0 + self.zoom_step
         } else {
-            1.0 / PIN_ZOOM_FACTOR
+            1.0 / (1.0 + self.zoom_step)
         };
         let new_size = clamp_pin_window_size(current_size * zoom_factor);
         if (new_size - current_size).length_sq() <= f32::EPSILON {

@@ -1,7 +1,6 @@
 import {
   Camera,
   ClipboardList,
-  Gauge,
   History,
   Keyboard,
   Languages,
@@ -18,8 +17,7 @@ export type ViewId =
   | "ocr"
   | "translation"
   | "hotkeys"
-  | "history"
-  | "models";
+  | "history";
 
 // Navigation and provider option tables stay outside App so the shell focuses on orchestration.
 export const navItems = [
@@ -30,7 +28,6 @@ export const navItems = [
   { id: "translation", labelKey: "view.translation", icon: Languages },
   { id: "hotkeys", labelKey: "view.hotkeys", icon: Keyboard },
   { id: "history", labelKey: "view.history", icon: History },
-  { id: "models", labelKey: "view.models", icon: Gauge },
 ] satisfies Array<{ id: ViewId; labelKey: TranslationKey; icon: typeof Camera }>;
 
 export const completionActions = [

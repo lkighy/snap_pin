@@ -31,6 +31,12 @@
     @apply border-border;
   }
 
+  html,
+  body,
+  #root {
+    @apply h-full overflow-hidden;
+  }
+
   body {
     @apply m-0 bg-background text-foreground antialiased;
     font-family:
