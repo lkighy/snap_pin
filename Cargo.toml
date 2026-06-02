@@ -27,3 +27,6 @@ ocr_engine = { path = "crates/ocr_engine" }
 platform_win32 = { path = "crates/platform_win32" }
 shared_models = { path = "crates/shared_models" }
 translate_engine = { path = "crates/translate_engine" }
+
+[patch.crates-io]
+ocr-rs = { path = "third_party/ocr-rs-2.2.2" }

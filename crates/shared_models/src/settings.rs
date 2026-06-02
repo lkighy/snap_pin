@@ -1,4 +1,4 @@
-use crate::{OcrProvider, TranslateProvider};
+use crate::{OcrProvider, OcrProviderProfile, OcrRunMode, TranslateProvider};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
@@ -129,17 +129,25 @@ impl Default for OverlaySettings {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OcrSettings {
+    pub mode: OcrRunMode,
     pub provider: OcrProvider,
     pub language_hint: Option<String>,
     pub auto_run_after_capture: bool,
+    pub default_model_id: Option<String>,
+    pub provider_profiles: Vec<OcrProviderProfile>,
+    pub default_provider_profile_id: Option<String>,
 }
 
 impl Default for OcrSettings {
     fn default() -> Self {
         Self {
+            mode: OcrRunMode::Standard,
             provider: OcrProvider::Local(crate::OcrLocalBackend::Mnn),
             language_hint: None,
             auto_run_after_capture: false,
+            default_model_id: None,
+            provider_profiles: Vec::new(),
+            default_provider_profile_id: None,
         }
     }
 }

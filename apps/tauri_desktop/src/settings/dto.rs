@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use shared_models::{
-    CaptureCompletionAction, OcrExternalProvider, OcrLocalBackend, OcrProvider, Settings,
-    TranslateExternalProvider, TranslateLocalBackend, TranslateProvider,
+    CaptureCompletionAction, OcrExternalProvider, OcrLocalBackend, OcrProvider, OcrProviderProfile,
+    OcrRunMode, Settings, TranslateExternalProvider, TranslateLocalBackend, TranslateProvider,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,9 +66,44 @@ pub struct PinSettingsDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OcrSettingsDto {
+    #[serde(default = "default_ocr_mode")]
+    pub mode: String,
     pub provider: String,
     pub language_hint: String,
     pub auto_run_after_capture: bool,
+    #[serde(default)]
+    pub default_model_id: String,
+    #[serde(default)]
+    pub provider_profiles: Vec<OcrProviderProfileDto>,
+    #[serde(default)]
+    pub default_provider_profile_id: String,
+}
+
+fn default_ocr_mode() -> String {
+    "standard".to_owned()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrProviderProfileDto {
+    pub id: String,
+    pub provider: String,
+    #[serde(default)]
+    pub endpoint: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub language_hint: String,
+    #[serde(default = "default_ocr_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default)]
+    pub retry_limit: u8,
+    #[serde(default)]
+    pub privacy_notice_acknowledged: bool,
+}
+
+fn default_ocr_timeout_ms() -> u64 {
+    15_000
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,9 +166,22 @@ impl From<&Settings> for AppSettingsDto {
                 show_translation_text: settings.pin.show_translation_text,
             },
             ocr: OcrSettingsDto {
+                mode: ocr_mode_name(&settings.ocr.mode),
                 provider: ocr_provider_name(&settings.ocr.provider),
                 language_hint: settings.ocr.language_hint.clone().unwrap_or_default(),
                 auto_run_after_capture: settings.ocr.auto_run_after_capture,
+                default_model_id: settings.ocr.default_model_id.clone().unwrap_or_default(),
+                provider_profiles: settings
+                    .ocr
+                    .provider_profiles
+                    .iter()
+                    .map(OcrProviderProfileDto::from)
+                    .collect(),
+                default_provider_profile_id: settings
+                    .ocr
+                    .default_provider_profile_id
+                    .clone()
+                    .unwrap_or_default(),
             },
             translation: TranslationSettingsDto {
                 provider: translate_provider_name(&settings.translate.provider),
@@ -184,9 +232,19 @@ impl From<AppSettingsDto> for Settings {
         settings.pin.show_ocr_text = dto.pin.show_ocr_text;
         settings.pin.show_translation_text = dto.pin.show_translation_text;
 
+        settings.ocr.mode = parse_ocr_mode(&dto.ocr.mode);
         settings.ocr.provider = parse_ocr_provider(&dto.ocr.provider);
         settings.ocr.language_hint = empty_to_none(dto.ocr.language_hint);
         settings.ocr.auto_run_after_capture = dto.ocr.auto_run_after_capture;
+        settings.ocr.default_model_id = empty_to_none(dto.ocr.default_model_id);
+        settings.ocr.provider_profiles = dto
+            .ocr
+            .provider_profiles
+            .into_iter()
+            .filter_map(OcrProviderProfile::try_from_dto)
+            .collect();
+        settings.ocr.default_provider_profile_id =
+            empty_to_none(dto.ocr.default_provider_profile_id);
 
         settings.translate.provider = parse_translate_provider(&dto.translation.provider);
         settings.translate.target_language = dto.translation.target_language;
@@ -201,6 +259,45 @@ impl From<AppSettingsDto> for Settings {
         settings.history.max_entries = dto.history.max_entries.clamp(10, 10_000);
 
         settings
+    }
+}
+
+impl From<&OcrProviderProfile> for OcrProviderProfileDto {
+    fn from(profile: &OcrProviderProfile) -> Self {
+        Self {
+            id: profile.id.clone(),
+            provider: ocr_external_provider_name(&profile.provider),
+            endpoint: profile.endpoint.clone().unwrap_or_default(),
+            model: profile.model.clone().unwrap_or_default(),
+            language_hint: profile.language_hint.clone().unwrap_or_default(),
+            timeout_ms: profile.timeout_ms,
+            retry_limit: profile.retry_limit,
+            privacy_notice_acknowledged: profile.privacy_notice_acknowledged,
+        }
+    }
+}
+
+trait TryFromOcrProviderProfileDto {
+    fn try_from_dto(dto: OcrProviderProfileDto) -> Option<OcrProviderProfile>;
+}
+
+impl TryFromOcrProviderProfileDto for OcrProviderProfile {
+    fn try_from_dto(dto: OcrProviderProfileDto) -> Option<OcrProviderProfile> {
+        let id = dto.id.trim().to_owned();
+        if id.is_empty() {
+            return None;
+        }
+
+        Some(OcrProviderProfile {
+            id,
+            provider: parse_ocr_external_provider(&dto.provider),
+            endpoint: empty_to_none(dto.endpoint),
+            model: empty_to_none(dto.model),
+            language_hint: empty_to_none(dto.language_hint),
+            timeout_ms: dto.timeout_ms.clamp(1_000, 120_000),
+            retry_limit: dto.retry_limit.min(5),
+            privacy_notice_acknowledged: dto.privacy_notice_acknowledged,
+        })
     }
 }
 
@@ -252,6 +349,51 @@ fn ocr_provider_name(provider: &OcrProvider) -> String {
         OcrProvider::ExternalApi(OcrExternalProvider::Custom(_)) => "api-custom",
     }
     .to_owned()
+}
+
+fn ocr_mode_name(mode: &OcrRunMode) -> String {
+    match mode {
+        OcrRunMode::Lightweight => "lightweight",
+        OcrRunMode::Standard => "standard",
+        OcrRunMode::Compatible => "compatible",
+        OcrRunMode::Advanced => "advanced",
+        OcrRunMode::Cloud => "cloud",
+    }
+    .to_owned()
+}
+
+fn parse_ocr_mode(value: &str) -> OcrRunMode {
+    match value {
+        "lightweight" => OcrRunMode::Lightweight,
+        "compatible" => OcrRunMode::Compatible,
+        "advanced" => OcrRunMode::Advanced,
+        "cloud" => OcrRunMode::Cloud,
+        _ => OcrRunMode::Standard,
+    }
+}
+
+fn ocr_external_provider_name(provider: &OcrExternalProvider) -> String {
+    match provider {
+        OcrExternalProvider::OpenAi => "api-openai",
+        OcrExternalProvider::AzureVision => "api-azure",
+        OcrExternalProvider::GoogleVision => "api-google",
+        OcrExternalProvider::BaiduOcr => "api-baidu",
+        OcrExternalProvider::TencentOcr => "api-tencent",
+        OcrExternalProvider::Custom(_) => "api-custom",
+    }
+    .to_owned()
+}
+
+fn parse_ocr_external_provider(value: &str) -> OcrExternalProvider {
+    match value {
+        "api-openai" => OcrExternalProvider::OpenAi,
+        "api-azure" => OcrExternalProvider::AzureVision,
+        "api-google" => OcrExternalProvider::GoogleVision,
+        "api-baidu" => OcrExternalProvider::BaiduOcr,
+        "api-tencent" => OcrExternalProvider::TencentOcr,
+        "api-custom" => OcrExternalProvider::Custom("custom".to_owned()),
+        _ => OcrExternalProvider::Custom("custom".to_owned()),
+    }
 }
 
 fn parse_ocr_provider(value: &str) -> OcrProvider {

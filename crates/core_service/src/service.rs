@@ -1,8 +1,12 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::thread;
+
 use model_registry::ModelRegistry;
-use ocr_engine::{MockOcrEngine, OcrEngine};
+use ocr_engine::{OcrEngine, RoutedOcrEngine};
 use shared_models::{
-    CoreCommand, CoreEvent, ImageData, LanguageCode, OcrJob, Settings, TranslateProvider,
-    TranslationRequest,
+    CoreCommand, CoreEvent, ImageData, LanguageCode, OcrJob, OcrLocalBackend, OcrProvider,
+    OcrRunMode, Settings, TranslateProvider, TranslationRequest,
 };
 use translate_engine::{MockTranslateEngine, TranslateEngine};
 
@@ -14,11 +18,12 @@ use crate::{
 pub struct CoreService {
     settings: Settings,
     config: ConfigStore,
-    history: HistoryStore,
+    history: Arc<Mutex<HistoryStore>>,
     screenshot: ScreenshotCoordinator,
     ocr: OcrCoordinator,
     translate: TranslateCoordinator,
-    ocr_engine: MockOcrEngine,
+    pending_ocr_translations: HashMap<String, String>,
+    ocr_engine: RoutedOcrEngine,
     translate_engine: MockTranslateEngine,
     models: ModelRegistry,
     hotkeys: HotkeyManager,
@@ -32,11 +37,12 @@ impl Default for CoreService {
         Self {
             config: ConfigStore::from_settings(settings.clone()),
             settings,
-            history: HistoryStore::default(),
+            history: Arc::new(Mutex::new(HistoryStore::default())),
             screenshot: ScreenshotCoordinator::default(),
             ocr: OcrCoordinator::default(),
             translate: TranslateCoordinator::default(),
-            ocr_engine: MockOcrEngine::default(),
+            pending_ocr_translations: HashMap::new(),
+            ocr_engine: RoutedOcrEngine::default(),
             translate_engine: MockTranslateEngine::default(),
             models: ModelRegistry::with_builtin_defaults(),
             hotkeys: HotkeyManager::default(),
@@ -57,6 +63,7 @@ impl CoreService {
                 vec![self.screenshot.pin_image(image_id, bounds)]
             }
             CoreCommand::RunOcr { job } => self.run_ocr(job),
+            CoreCommand::CancelOcr { job_id } => vec![self.ocr.cancel(job_id)],
             CoreCommand::Translate { request } => self.run_translation(request),
             CoreCommand::RunOcrAndTranslate {
                 job,
@@ -67,11 +74,13 @@ impl CoreService {
                 self.models.register(manifest);
                 vec![CoreEvent::ModelRegistered { model_id }]
             }
+            CoreCommand::ImportModel { manifest_path } => self.import_model(manifest_path),
             CoreCommand::UpdateSettings(settings) => {
                 self.settings = settings.clone();
                 self.config.replace(settings);
                 vec![CoreEvent::SettingsUpdated]
             }
+            CoreCommand::DrainEvents => self.drain_events(),
         };
 
         for event in &events {
@@ -84,8 +93,8 @@ impl CoreService {
         &self.settings
     }
 
-    pub fn history(&self) -> &HistoryStore {
-        &self.history
+    pub fn history_snapshot(&self) -> HistoryStore {
+        self.history.lock().expect("history lock poisoned").clone()
     }
 
     pub fn models(&self) -> &ModelRegistry {
@@ -96,6 +105,7 @@ impl CoreService {
         vec![
             "screenshot",
             "ocr",
+            ocr_engine::local_runtime_status(),
             "translate",
             "hotkeys",
             "clipboard",
@@ -123,10 +133,61 @@ impl CoreService {
             region
         );
         self.screenshot.store_image(image);
-        vec![CoreEvent::CaptureFinished { image_id, region }]
+        let mut events = vec![CoreEvent::CaptureFinished {
+            image_id: image_id.clone(),
+            region,
+        }];
+
+        if self.settings.ocr.auto_run_after_capture {
+            let job = OcrJob {
+                id: format!("ocr-{}", image_id.0),
+                image_id,
+                source_rect: Some(region),
+                language_hint: self.settings.ocr.language_hint.clone(),
+                provider: self.settings.ocr.provider.clone(),
+                provider_profile_id: self.settings.ocr.default_provider_profile_id.clone(),
+                model_id: self.settings.ocr.default_model_id.clone(),
+            };
+
+            if self.settings.translate.auto_translate_after_ocr {
+                events.extend(
+                    self.run_ocr_and_translate(
+                        job,
+                        self.settings.translate.target_language.clone(),
+                    ),
+                );
+            } else {
+                events.extend(self.run_ocr(job));
+            }
+        }
+
+        events
+    }
+
+    fn import_model(&mut self, manifest_path: String) -> Vec<CoreEvent> {
+        match self.models.import_manifest_file(&manifest_path) {
+            Ok(model) => vec![CoreEvent::ModelRegistered {
+                model_id: model.id.clone(),
+            }],
+            Err(error) => vec![CoreEvent::Error {
+                code: error.code,
+                message: error.message,
+            }],
+        }
     }
 
     fn run_ocr(&mut self, mut job: OcrJob) -> Vec<CoreEvent> {
+        self.apply_ocr_mode_defaults(&mut job);
+
+        if job.provider == OcrProvider::Disabled {
+            job.provider = self.settings.ocr.provider.clone();
+        }
+        if job.language_hint.is_none() {
+            job.language_hint = self.settings.ocr.language_hint.clone();
+        }
+        if job.provider_profile_id.is_none() {
+            job.provider_profile_id = self.settings.ocr.default_provider_profile_id.clone();
+        }
         log::info!(
             "core starting ocr job={} image={} provider={:?}",
             job.id,
@@ -135,6 +196,8 @@ impl CoreService {
         );
         let mut events = vec![self.ocr.enqueue(job.clone())];
         self.apply_default_ocr_model(&mut job);
+        self.ocr_engine
+            .configure_provider_profiles(&self.settings.ocr.provider_profiles);
 
         let Some(image) = self.screenshot.image(&job.image_id) else {
             log::error!("core ocr image missing image={}", job.image_id.0);
@@ -145,31 +208,29 @@ impl CoreService {
             return events;
         };
 
-        match self.ocr_engine.recognize(&job, image) {
-            Ok(result) => {
-                if self.settings.history.enabled {
-                    self.history.push_ocr(result.clone());
+        let image = image.clone();
+        let history = Arc::clone(&self.history);
+        let save_history = self.settings.history.enabled;
+        let sender = self.ocr.completion_sender();
+        let engine = self.ocr_engine.clone();
+        thread::spawn(move || {
+            let event = match engine.recognize(&job, &image) {
+                Ok(result) => {
+                    if save_history {
+                        history
+                            .lock()
+                            .expect("history lock poisoned")
+                            .push_ocr(result.clone());
+                    }
+                    CoreEvent::OcrCompleted { result }
                 }
-                log::info!(
-                    "core ocr completed job={} blocks={} text_chars={}",
-                    result.job_id,
-                    result.blocks.len(),
-                    result.plain_text.chars().count()
-                );
-                events.push(CoreEvent::OcrCompleted { result });
-            }
-            Err(error) => {
-                log::error!(
-                    "core ocr failed code={} message={}",
-                    error.code,
-                    error.message
-                );
-                events.push(CoreEvent::Error {
+                Err(error) => CoreEvent::Error {
                     code: error.code,
                     message: error.message,
-                });
-            }
-        }
+                },
+            };
+            let _ = sender.send(event);
+        });
 
         events
     }
@@ -188,7 +249,10 @@ impl CoreService {
         match self.translate_engine.translate(&request) {
             Ok(result) => {
                 if self.settings.history.enabled {
-                    self.history.push_translation(result.clone());
+                    self.history
+                        .lock()
+                        .expect("history lock poisoned")
+                        .push_translation(result.clone());
                 }
                 log::info!(
                     "core translation completed request={} translated_chars={}",
@@ -219,30 +283,52 @@ impl CoreService {
             job.id,
             target_language
         );
-        let mut events = self.run_ocr(job);
-        let Some(ocr_result) = events.iter().find_map(|event| match event {
-            CoreEvent::OcrCompleted { result } => Some(result.clone()),
-            _ => None,
-        }) else {
-            log::error!("core ocr and translation stopped because ocr did not complete");
-            return events;
-        };
+        self.pending_ocr_translations
+            .insert(job.id.clone(), target_language);
+        self.run_ocr(job)
+    }
 
-        let request = TranslationRequest {
-            id: format!("translate-{}", ocr_result.job_id),
-            source_text: ocr_result.plain_text,
-            source_language: ocr_result
-                .blocks
-                .first()
-                .and_then(|block| block.language.clone())
-                .map(LanguageCode),
-            target_language: LanguageCode(target_language),
-            provider: self.settings.translate.provider.clone(),
-            model_id: None,
-            context: Some(format!("ocr_job:{}", ocr_result.job_id)),
-        };
+    fn drain_events(&mut self) -> Vec<CoreEvent> {
+        let mut events = self
+            .ocr
+            .drain_completed()
+            .into_iter()
+            .filter(|event| match event {
+                CoreEvent::OcrCompleted { result } => !self.ocr.is_canceled(&result.job_id),
+                _ => true,
+            })
+            .collect::<Vec<_>>();
 
-        events.extend(self.run_translation(request));
+        let completed_ocr = events
+            .iter()
+            .filter_map(|event| match event {
+                CoreEvent::OcrCompleted { result } => Some(result.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        for ocr_result in completed_ocr {
+            let Some(target_language) = self.pending_ocr_translations.remove(&ocr_result.job_id)
+            else {
+                continue;
+            };
+            let request = TranslationRequest {
+                id: format!("translate-{}", ocr_result.job_id),
+                source_text: ocr_result.plain_text,
+                source_language: ocr_result
+                    .blocks
+                    .first()
+                    .and_then(|block| block.language.clone())
+                    .map(LanguageCode),
+                target_language: LanguageCode(target_language),
+                provider: self.settings.translate.provider.clone(),
+                model_id: None,
+                context: Some(format!("ocr_job:{}", ocr_result.job_id)),
+            };
+
+            events.extend(self.run_translation(request));
+        }
+
         events
     }
 
@@ -251,9 +337,61 @@ impl CoreService {
             job.model_id = self.models.recommended_ocr().map(|model| model.id.clone());
         }
 
+        if !matches!(job.provider, OcrProvider::Local(_)) {
+            return;
+        }
+
         if let Some(model) = job.model_id.as_deref().and_then(|id| self.models.find(id)) {
             log::info!("core loading ocr model id={}", model.id);
-            let _ = self.ocr_engine.load_model(model);
+            if let Err(error) = self.ocr_engine.load_model(model) {
+                log::error!(
+                    "core failed to load ocr model id={} code={} message={}",
+                    model.id,
+                    error.code,
+                    error.message
+                );
+            }
+        }
+    }
+
+    fn apply_ocr_mode_defaults(&self, job: &mut OcrJob) {
+        if matches!(job.provider, OcrProvider::System) {
+            return;
+        }
+
+        match self.settings.ocr.mode {
+            OcrRunMode::Lightweight => {
+                job.provider = OcrProvider::Local(OcrLocalBackend::Mnn);
+                job.model_id = self
+                    .settings
+                    .ocr
+                    .default_model_id
+                    .clone()
+                    .or_else(|| Some("ppocr-v5-mobile-fp16-mnn".to_owned()));
+            }
+            OcrRunMode::Standard => {
+                job.provider = OcrProvider::Local(OcrLocalBackend::Mnn);
+                job.model_id = self
+                    .settings
+                    .ocr
+                    .default_model_id
+                    .clone()
+                    .or_else(|| Some("ppocr-v5-mobile-mnn".to_owned()));
+            }
+            OcrRunMode::Compatible => {
+                job.provider = OcrProvider::Local(OcrLocalBackend::Mnn);
+                job.model_id = self
+                    .settings
+                    .ocr
+                    .default_model_id
+                    .clone()
+                    .or_else(|| Some("ppocr-v4-mobile-mnn".to_owned()));
+            }
+            OcrRunMode::Cloud => {
+                job.provider = self.settings.ocr.provider.clone();
+                job.provider_profile_id = self.settings.ocr.default_provider_profile_id.clone();
+            }
+            OcrRunMode::Advanced => {}
         }
     }
 
@@ -289,10 +427,13 @@ fn command_name(command: &CoreCommand) -> &'static str {
         CoreCommand::CompleteCapture { .. } => "complete_capture",
         CoreCommand::PinImage { .. } => "pin_image",
         CoreCommand::RunOcr { .. } => "run_ocr",
+        CoreCommand::CancelOcr { .. } => "cancel_ocr",
         CoreCommand::Translate { .. } => "translate",
         CoreCommand::RunOcrAndTranslate { .. } => "run_ocr_and_translate",
         CoreCommand::RegisterModel(_) => "register_model",
+        CoreCommand::ImportModel { .. } => "import_model",
         CoreCommand::UpdateSettings(_) => "update_settings",
+        CoreCommand::DrainEvents => "drain_events",
     }
 }
 
@@ -309,6 +450,9 @@ fn log_core_event(event: &CoreEvent) {
         }
         CoreEvent::OcrQueued { job_id } => {
             log::info!("core produced ocr_queued job={job_id}");
+        }
+        CoreEvent::OcrCanceled { job_id } => {
+            log::info!("core produced ocr_canceled job={job_id}");
         }
         CoreEvent::OcrCompleted { result } => {
             log::info!(
@@ -340,9 +484,12 @@ fn log_core_event(event: &CoreEvent) {
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
+    use std::time::Duration;
+
     use shared_models::{
         CoreCommand, CoreEvent, ImageData, ImageFormat, ImageId, ImageMetadata, OcrJob,
-        OcrLocalBackend, OcrProvider, Point, Rect, Size,
+        OcrLocalBackend, OcrProvider, Point, Rect, Settings, Size,
     };
 
     use super::CoreService;
@@ -374,6 +521,7 @@ mod tests {
                 source_rect: Some(region),
                 language_hint: Some("en".to_owned()),
                 provider: OcrProvider::Local(OcrLocalBackend::Mnn),
+                provider_profile_id: None,
                 model_id: None,
             },
             target_language: "zh-CN".to_owned(),
@@ -382,14 +530,59 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|event| matches!(event, CoreEvent::OcrCompleted { .. }))
+                .any(|event| matches!(event, CoreEvent::OcrQueued { .. }))
+        );
+
+        let mut drained = Vec::new();
+        for _ in 0..20 {
+            thread::sleep(Duration::from_millis(10));
+            drained.extend(service.handle_command(CoreCommand::DrainEvents));
+            if drained
+                .iter()
+                .any(|event| matches!(event, CoreEvent::Error { .. }))
+            {
+                break;
+            }
+        }
+
+        assert!(drained.iter().any(|event| {
+            matches!(
+                event,
+                CoreEvent::Error { code, .. } if code == "local_ocr_runtime_disabled"
+            )
+        }));
+    }
+
+    #[test]
+    fn auto_queues_ocr_after_capture_when_enabled() {
+        let mut service = CoreService::default();
+        let mut settings = Settings::default();
+        settings.ocr.auto_run_after_capture = true;
+        service.handle_command(CoreCommand::UpdateSettings(settings));
+
+        let region = Rect::new(Point::ZERO, Size::new(20.0, 10.0));
+        let image = ImageData {
+            id: ImageId::new("auto-image"),
+            metadata: ImageMetadata {
+                id: ImageId::new("auto-image"),
+                pixel_size: region.size,
+                format: ImageFormat::Rgba8,
+                monitor_name: None,
+            },
+            bytes: vec![0; 20 * 10 * 4],
+        };
+
+        let events = service.handle_command(CoreCommand::CompleteCapture { image, region });
+
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::CaptureFinished { .. }))
         );
         assert!(
             events
                 .iter()
-                .any(|event| matches!(event, CoreEvent::TranslationCompleted { .. }))
+                .any(|event| matches!(event, CoreEvent::OcrQueued { .. }))
         );
-        assert_eq!(service.history().ocr_results().len(), 1);
-        assert_eq!(service.history().translations().len(), 1);
     }
 }

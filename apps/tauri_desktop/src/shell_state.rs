@@ -3,7 +3,7 @@ use shared_models::{CoreCommand, CoreEvent, Settings};
 use tauri::AppHandle;
 
 use crate::ipc::bridge::DesktopIpcBridge;
-use crate::settings::store;
+use crate::settings::{models, store};
 
 pub struct ShellState {
     core: CoreService,
@@ -27,6 +27,9 @@ impl ShellState {
             state.update_settings(Settings::from(settings));
         } else {
             log::info!("using default settings");
+        }
+        for model in models::load(app) {
+            state.dispatch(CoreCommand::RegisterModel(model));
         }
         state
     }
@@ -61,10 +64,11 @@ impl ShellState {
     }
 
     pub fn history_summary(&self) -> String {
+        let history = self.core.history_snapshot();
         format!(
             "history: {} ocr result(s), {} translation(s)",
-            self.core.history().ocr_results().len(),
-            self.core.history().translations().len()
+            history.ocr_results().len(),
+            history.translations().len()
         )
     }
 
@@ -81,6 +85,10 @@ impl ShellState {
         format!("models: {}", model_ids)
     }
 
+    pub fn model_manifests(&self) -> &[shared_models::ModelManifest] {
+        self.core.models().list()
+    }
+
     pub fn ipc(&mut self) -> &mut DesktopIpcBridge {
         &mut self.ipc
     }
@@ -93,10 +101,13 @@ fn command_name(command: &CoreCommand) -> &'static str {
         CoreCommand::CompleteCapture { .. } => "complete_capture",
         CoreCommand::PinImage { .. } => "pin_image",
         CoreCommand::RunOcr { .. } => "run_ocr",
+        CoreCommand::CancelOcr { .. } => "cancel_ocr",
         CoreCommand::Translate { .. } => "translate",
         CoreCommand::RunOcrAndTranslate { .. } => "run_ocr_and_translate",
         CoreCommand::UpdateSettings(_) => "update_settings",
         CoreCommand::RegisterModel(_) => "register_model",
+        CoreCommand::ImportModel { .. } => "import_model",
+        CoreCommand::DrainEvents => "drain_events",
     }
 }
 
@@ -107,6 +118,7 @@ fn event_name(event: &CoreEvent) -> &'static str {
         CoreEvent::CaptureFinished { .. } => "capture_finished",
         CoreEvent::ImagePinned { .. } => "image_pinned",
         CoreEvent::OcrQueued { .. } => "ocr_queued",
+        CoreEvent::OcrCanceled { .. } => "ocr_canceled",
         CoreEvent::OcrCompleted { .. } => "ocr_completed",
         CoreEvent::TranslationQueued { .. } => "translation_queued",
         CoreEvent::TranslationCompleted { .. } => "translation_completed",

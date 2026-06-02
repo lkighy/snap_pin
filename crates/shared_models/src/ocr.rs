@@ -26,6 +26,27 @@ pub enum OcrExternalProvider {
     Custom(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OcrRunMode {
+    Lightweight,
+    Standard,
+    Compatible,
+    Advanced,
+    Cloud,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OcrProviderProfile {
+    pub id: String,
+    pub provider: OcrExternalProvider,
+    pub endpoint: Option<String>,
+    pub model: Option<String>,
+    pub language_hint: Option<String>,
+    pub timeout_ms: u64,
+    pub retry_limit: u8,
+    pub privacy_notice_acknowledged: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct OcrJob {
     pub id: String,
@@ -33,6 +54,7 @@ pub struct OcrJob {
     pub source_rect: Option<Rect>,
     pub language_hint: Option<String>,
     pub provider: OcrProvider,
+    pub provider_profile_id: Option<String>,
     pub model_id: Option<String>,
 }
 

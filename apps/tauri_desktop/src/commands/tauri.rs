@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -6,7 +7,7 @@ use tauri::{AppHandle, State};
 use super::mvp;
 use crate::capture::launcher;
 use crate::settings::dto::AppSettingsDto;
-use crate::settings::store;
+use crate::settings::{models, store};
 use crate::shell_state::ShellState;
 use crate::tray;
 
@@ -31,6 +32,27 @@ pub struct CaptureResponse {
     pub events: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelImportResponse {
+    pub events: Vec<String>,
+    pub model_summary: String,
+    pub models: Vec<ModelSummaryDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelSummaryDto {
+    pub id: String,
+    pub name: String,
+    pub domain: String,
+    pub backend: String,
+    pub source: String,
+    pub availability: String,
+    pub path: Option<String>,
+    pub package_source: Option<String>,
+}
+
 #[tauri::command]
 pub fn app_status(state: State<'_, Mutex<ShellState>>) -> Result<AppStatus, String> {
     log::info!("tauri command app_status started");
@@ -52,6 +74,15 @@ pub fn get_settings(state: State<'_, Mutex<ShellState>>) -> Result<AppSettingsDt
     let settings = AppSettingsDto::from(state.settings());
     log::info!("tauri command get_settings completed");
     Ok(settings)
+}
+
+#[tauri::command]
+pub fn list_models(state: State<'_, Mutex<ShellState>>) -> Result<Vec<ModelSummaryDto>, String> {
+    log::info!("tauri command list_models started");
+    let state = state.lock().map_err(|_| "shell state lock poisoned")?;
+    let models = model_summaries(state.model_manifests());
+    log::info!("tauri command list_models completed");
+    Ok(models)
 }
 
 #[tauri::command]
@@ -96,6 +127,105 @@ pub fn run_mvp_flow(state: State<'_, Mutex<ShellState>>) -> Result<MvpRunRespons
         events,
         history_summary: state.history_summary(),
     })
+}
+
+#[tauri::command]
+pub fn drain_events(state: State<'_, Mutex<ShellState>>) -> Result<MvpRunResponse, String> {
+    log::info!("tauri command drain_events started");
+    let mut state = state.lock().map_err(|_| "shell state lock poisoned")?;
+    let events = state
+        .dispatch(shared_models::CoreCommand::DrainEvents)
+        .into_iter()
+        .map(|event| format!("{event:?}"))
+        .collect();
+
+    log::info!("tauri command drain_events completed");
+    Ok(MvpRunResponse {
+        events,
+        history_summary: state.history_summary(),
+    })
+}
+
+#[tauri::command]
+pub fn import_model(
+    app: AppHandle,
+    state: State<'_, Mutex<ShellState>>,
+    manifest_path: String,
+) -> Result<ModelImportResponse, String> {
+    log::info!("tauri command import_model started");
+    let manifest = models::storage(&app)?
+        .import_manifest_file(&manifest_path)
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    let (events, model_summary, model_list) = {
+        let mut state = state.lock().map_err(|_| "shell state lock poisoned")?;
+        let events = state
+            .dispatch(shared_models::CoreCommand::RegisterModel(manifest))
+            .into_iter()
+            .map(|event| format!("{event:?}"))
+            .collect::<Vec<_>>();
+        models::save(&app, state.model_manifests())?;
+        (
+            events,
+            state.model_summary(),
+            model_summaries(state.model_manifests()),
+        )
+    };
+
+    log::info!("tauri command import_model completed");
+    Ok(ModelImportResponse {
+        events,
+        model_summary,
+        models: model_list,
+    })
+}
+
+fn model_summaries(models: &[shared_models::ModelManifest]) -> Vec<ModelSummaryDto> {
+    models
+        .iter()
+        .map(|model| {
+            let (source, availability, path) = model_source_status(model);
+            ModelSummaryDto {
+                id: model.id.clone(),
+                name: model.name.clone(),
+                domain: match model.domain {
+                    shared_models::ModelDomain::Ocr => "ocr",
+                    shared_models::ModelDomain::Translation => "translation",
+                }
+                .to_owned(),
+                backend: model.backend.clone(),
+                source,
+                availability,
+                path,
+                package_source: model_registry::find_builtin_ocr_package_source(&model.id)
+                    .map(|source| source.source_name.to_owned()),
+            }
+        })
+        .collect()
+}
+
+fn model_source_status(model: &shared_models::ModelManifest) -> (String, String, Option<String>) {
+    match &model.source {
+        shared_models::ModelSource::BuiltIn => {
+            ("built-in".to_owned(), "manifest-only".to_owned(), None)
+        }
+        shared_models::ModelSource::Download { url, .. } => (
+            "download".to_owned(),
+            "not-downloaded".to_owned(),
+            Some(url.clone()),
+        ),
+        shared_models::ModelSource::LocalPath(root) => {
+            let missing = model
+                .files
+                .iter()
+                .filter(|file| file.required)
+                .any(|file| !Path::new(root).join(&file.path).exists());
+            (
+                "local-path".to_owned(),
+                if missing { "missing-files" } else { "ready" }.to_owned(),
+                Some(root.clone()),
+            )
+        }
+    }
 }
 
 #[tauri::command]

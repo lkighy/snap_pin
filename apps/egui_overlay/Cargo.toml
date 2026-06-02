@@ -10,6 +10,8 @@ eframe = "0.33"
 image = { version = "0.25", default-features = false, features = ["png"] }
 ipc.workspace = true
 log.workspace = true
+model_registry.workspace = true
+ocr_engine.workspace = true
 platform_win32.workspace = true
 raw-window-handle = "0.6"
 serde = { version = "1", features = ["derive"] }

@@ -1,7 +1,10 @@
-import { AppSettings } from "@/lib/tauri";
+import { AppSettings, ModelSummary } from "@/lib/tauri";
 import { localeOptions, Translator } from "@/i18n";
+import { Loader2, Upload } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   completionActions,
+  ocrModes,
   ocrProviders,
   targetLanguages,
   translationProviders,
@@ -27,6 +30,11 @@ interface SettingsPanelProps {
     section: K,
     values: Partial<AppSettings[K]>,
   ) => void;
+  modelManifestPath: string;
+  onModelManifestPathChange: (value: string) => void;
+  onImportModel: () => void;
+  importingModel: boolean;
+  models: ModelSummary[];
   t: Translator;
 }
 
@@ -35,6 +43,11 @@ export function SettingsPanel({
   activeView,
   settings,
   updateSettings,
+  modelManifestPath,
+  onModelManifestPathChange,
+  onImportModel,
+  importingModel,
+  models,
   t,
 }: SettingsPanelProps) {
   if (activeView === "interface") {
@@ -205,8 +218,56 @@ export function SettingsPanel({
   }
 
   if (activeView === "ocr") {
+    const ocrModelOptions = [
+      { value: "auto", label: t("model.auto") },
+      ...models
+        .filter((model) => model.domain === "ocr")
+        .map((model) => ({
+          value: model.id,
+          label: `${model.name} (${model.backend}, ${model.availability})`,
+        })),
+    ];
+    const defaultProfileId =
+      settings.ocr.defaultProviderProfileId || "custom-http";
+    const customProfile =
+      settings.ocr.providerProfiles.find(
+        (profile) => profile.id === defaultProfileId,
+      ) ?? {
+        id: defaultProfileId,
+        provider: "api-custom",
+        endpoint: "",
+        model: "",
+        languageHint: "",
+        timeoutMs: 15000,
+        retryLimit: 0,
+        privacyNoticeAcknowledged: false,
+      };
+    const updateCustomProfile = (
+      values: Partial<typeof customProfile>,
+    ) => {
+      const nextProfile = {
+        ...customProfile,
+        ...values,
+        id: values.id ?? customProfile.id,
+        provider: "api-custom",
+      };
+      const others = settings.ocr.providerProfiles.filter(
+        (profile) => profile.id !== customProfile.id && profile.id !== nextProfile.id,
+      );
+      updateSettings("ocr", {
+        providerProfiles: [...others, nextProfile],
+        defaultProviderProfileId: nextProfile.id,
+      });
+    };
+
     return (
       <FieldGrid>
+        <SelectField
+          label={t("field.ocrMode")}
+          value={settings.ocr.mode}
+          options={localizedOptions(ocrModes, t)}
+          onValueChange={(mode) => updateSettings("ocr", { mode })}
+        />
         <SelectField
           label={t("field.provider")}
           value={settings.ocr.provider}
@@ -228,11 +289,68 @@ export function SettingsPanel({
             updateSettings("ocr", { autoRunAfterCapture })
           }
         />
+        <SelectField
+          label={t("field.defaultOcrModel")}
+          value={settings.ocr.defaultModelId || "auto"}
+          options={ocrModelOptions}
+          onValueChange={(value) => {
+            updateSettings("ocr", {
+              defaultModelId: value === "auto" ? "" : value,
+            });
+          }}
+        />
+        <TextField
+          label={t("field.ocrProfileId")}
+          value={customProfile.id}
+          placeholder="custom-http"
+          onValueChange={(id) => updateCustomProfile({ id })}
+        />
+        <TextField
+          label={t("field.customHttpEndpoint")}
+          value={customProfile.endpoint}
+          placeholder="http://127.0.0.1:8080/ocr"
+          onValueChange={(endpoint) => updateCustomProfile({ endpoint })}
+        />
+        <NumberField
+          label={t("field.ocrTimeout")}
+          min={1000}
+          max={120000}
+          step={1000}
+          value={customProfile.timeoutMs}
+          onValueChange={(timeoutMs) => updateCustomProfile({ timeoutMs })}
+        />
+        <SwitchField
+          label={t("field.externalOcrPrivacy")}
+          checked={customProfile.privacyNoticeAcknowledged}
+          onCheckedChange={(privacyNoticeAcknowledged) =>
+            updateCustomProfile({ privacyNoticeAcknowledged })
+          }
+        />
         <ModelTile
           label={t("model.ocrDefault")}
           value="ppocr-v5-mobile-mnn"
           configuredLabel={t("model.configured")}
         />
+        <TextField
+          label={t("field.modelManifestPath")}
+          value={modelManifestPath}
+          placeholder="D:\\models\\ppocr-v5-mobile-mnn\\manifest.toml"
+          onValueChange={onModelManifestPathChange}
+        />
+        <Button
+          type="button"
+          variant="outline"
+          className="min-h-[62px] min-w-0 justify-center"
+          disabled={!modelManifestPath.trim() || importingModel}
+          onClick={onImportModel}
+        >
+          {importingModel ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <Upload className="size-4" />
+          )}
+          <span className="truncate">{t("button.importModel")}</span>
+        </Button>
       </FieldGrid>
     );
   }
@@ -268,6 +386,28 @@ export function SettingsPanel({
           value="opus-mt-en-zh-ct2-int8"
           configuredLabel={t("model.configured")}
         />
+      </FieldGrid>
+    );
+  }
+
+  if (activeView === "models") {
+    return (
+      <FieldGrid>
+        {models.map((model) => (
+          <ModelTile
+            key={model.id}
+            label={model.domain}
+            value={`${model.name} / ${model.id}`}
+            configuredLabel={`${model.backend} / ${model.source} / ${model.availability}${model.packageSource ? ` / ${model.packageSource}` : ""}`}
+          />
+        ))}
+        {models.length === 0 ? (
+          <ModelTile
+            label={t("view.models")}
+            value={t("events.none")}
+            configuredLabel={t("model.auto")}
+          />
+        ) : null}
       </FieldGrid>
     );
   }

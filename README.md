@@ -50,6 +50,52 @@ For the non-GUI MVP flow:
 cargo run -p tauri_desktop -- --mvp-cli
 ```
 
+## OCR Runtime
+
+The default workspace build keeps the heavy local OCR runtime disabled. Without
+`local-ocr-rs` the app still builds, but local MNN OCR reports
+`local_ocr_runtime_disabled`.
+
+To build the MNN-backed `ocr-rs` adapter on Windows, the machine needs:
+
+- Rust MSVC toolchain.
+- Visual Studio 2022 C++ build tools.
+- LLVM, so bindgen can load `libclang.dll`.
+
+The helper script checks the Windows environment, loads the MSVC build variables
+when Visual Studio is installed, sets `LIBCLANG_PATH`, and runs the feature
+build:
+
+```powershell
+pwsh scripts/check-ocr-rs-windows.ps1
+```
+
+Install LLVM with a package manager if `libclang.dll` is missing:
+
+```powershell
+choco install llvm -y
+# or
+winget install LLVM.LLVM
+```
+
+If LLVM is installed in a non-standard location, pass the directory containing
+`libclang.dll`, or the LLVM install root:
+
+```powershell
+pwsh scripts/check-ocr-rs-windows.ps1 -LibClangPath "C:\Program Files\LLVM\bin"
+pwsh scripts/check-ocr-rs-windows.ps1 -LibClangPath "D:\tools\LLVM"
+```
+
+For a full release build after the environment check succeeds:
+
+```powershell
+pwsh scripts/check-ocr-rs-windows.ps1 -CargoCommand "build -p tauri_desktop --release --features local-ocr-rs"
+```
+
+The workspace patches `ocr-rs` locally only to build it as a Rust library. The
+upstream crate also emits a `cdylib`, which is not used by snap_pin and can fail
+to link against the prebuilt Windows MNN static library in release builds.
+
 ## Workspace
 
 - `apps/tauri_desktop`: Tauri shell boundary for tray, settings, commands, and UI IPC.

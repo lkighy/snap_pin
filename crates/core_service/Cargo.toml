@@ -11,3 +11,7 @@ model_registry.workspace = true
 ocr_engine.workspace = true
 shared_models.workspace = true
 translate_engine.workspace = true
+
+[features]
+default = []
+local-ocr-rs = ["ocr_engine/local-ocr-rs"]

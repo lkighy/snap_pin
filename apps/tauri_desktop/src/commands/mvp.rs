@@ -3,6 +3,8 @@ use shared_models::{
     CoreCommand, CoreEvent, ImageData, ImageFormat, ImageId, ImageMetadata, OcrJob, Point, Rect,
     Settings, Size, TranslationRequest,
 };
+use std::thread;
+use std::time::Duration;
 
 pub fn start_capture(state: &mut ShellState) -> Vec<CoreEvent> {
     state.dispatch(CoreCommand::StartCapture)
@@ -45,10 +47,27 @@ pub fn run_mvp_capture_ocr_translate(state: &mut ShellState) -> Vec<CoreEvent> {
             source_rect: Some(region),
             language_hint: Some("en".to_owned()),
             provider: state.settings().ocr.provider.clone(),
+            provider_profile_id: state.settings().ocr.default_provider_profile_id.clone(),
             model_id: None,
         },
         target_language: state.settings().translate.target_language.clone(),
     }));
+    for _ in 0..20 {
+        thread::sleep(Duration::from_millis(25));
+        let drained = state.dispatch(CoreCommand::DrainEvents);
+        let done = drained.iter().any(|event| {
+            matches!(
+                event,
+                CoreEvent::OcrCompleted { .. }
+                    | CoreEvent::TranslationCompleted { .. }
+                    | CoreEvent::Error { .. }
+            )
+        });
+        events.extend(drained);
+        if done {
+            break;
+        }
+    }
 
     events
 }

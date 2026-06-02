@@ -10,7 +10,9 @@ use platform_win32::{
     CaptureWindowRegion, HotkeyListener, HotkeyRegistration, NamedSharedMemory, listen_for_hotkey,
 };
 use serde::{Deserialize, Serialize};
-use shared_models::{CaptureCompletionAction, Settings};
+use shared_models::{
+    CaptureCompletionAction, OcrExternalProvider, OcrLocalBackend, OcrProvider, Settings,
+};
 use tauri::{AppHandle, Manager};
 
 use super::overlay_launch::overlay_launch;
@@ -326,6 +328,12 @@ fn resident_overlay_args(settings: &Settings) -> Vec<String> {
         settings.pin.zoom_step.to_string(),
         "--pin-always-on-top".to_owned(),
         settings.pin.always_on_top.to_string(),
+        "--ocr-provider".to_owned(),
+        ocr_provider_name(&settings.ocr.provider),
+        "--ocr-language-hint".to_owned(),
+        settings.ocr.language_hint.clone().unwrap_or_default(),
+        "--ocr-default-model-id".to_owned(),
+        settings.ocr.default_model_id.clone().unwrap_or_default(),
     ]
 }
 
@@ -347,6 +355,9 @@ struct OverlayCaptureCommand {
     pin_opacity: f32,
     pin_zoom_step: f32,
     pin_always_on_top: bool,
+    ocr_provider: String,
+    ocr_language_hint: Option<String>,
+    ocr_default_model_id: Option<String>,
 }
 
 impl OverlayCaptureCommand {
@@ -379,8 +390,29 @@ impl OverlayCaptureCommand {
             pin_opacity: settings.pin.default_opacity,
             pin_zoom_step: settings.pin.zoom_step,
             pin_always_on_top: settings.pin.always_on_top,
+            ocr_provider: ocr_provider_name(&settings.ocr.provider),
+            ocr_language_hint: settings.ocr.language_hint.clone(),
+            ocr_default_model_id: settings.ocr.default_model_id.clone(),
         }
     }
+}
+
+fn ocr_provider_name(provider: &OcrProvider) -> String {
+    match provider {
+        OcrProvider::Disabled => "disabled",
+        OcrProvider::System => "system",
+        OcrProvider::Local(OcrLocalBackend::Mnn) => "local-mnn",
+        OcrProvider::Local(OcrLocalBackend::OnnxRuntime) => "local-onnx",
+        OcrProvider::Local(OcrLocalBackend::PaddleRuntime) => "local-paddle",
+        OcrProvider::Local(OcrLocalBackend::Custom(_)) => "local-custom",
+        OcrProvider::ExternalApi(OcrExternalProvider::OpenAi) => "api-openai",
+        OcrProvider::ExternalApi(OcrExternalProvider::AzureVision) => "api-azure",
+        OcrProvider::ExternalApi(OcrExternalProvider::GoogleVision) => "api-google",
+        OcrProvider::ExternalApi(OcrExternalProvider::BaiduOcr) => "api-baidu",
+        OcrProvider::ExternalApi(OcrExternalProvider::TencentOcr) => "api-tencent",
+        OcrProvider::ExternalApi(OcrExternalProvider::Custom(_)) => "api-custom",
+    }
+    .to_owned()
 }
 
 fn completion_action_name(action: &CaptureCompletionAction) -> &'static str {

@@ -27,8 +27,11 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::tauri::app_status,
             commands::tauri::get_settings,
+            commands::tauri::list_models,
             commands::tauri::save_settings,
             commands::tauri::run_mvp_flow,
+            commands::tauri::drain_events,
+            commands::tauri::import_model,
             commands::tauri::start_capture
         ])
         .setup(|app| {

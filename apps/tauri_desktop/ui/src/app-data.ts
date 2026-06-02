@@ -16,6 +16,7 @@ export type ViewId =
   | "pin"
   | "ocr"
   | "translation"
+  | "models"
   | "hotkeys"
   | "history";
 
@@ -26,6 +27,7 @@ export const navItems = [
   { id: "pin", labelKey: "view.pin", icon: Pin },
   { id: "ocr", labelKey: "view.ocr", icon: ClipboardList },
   { id: "translation", labelKey: "view.translation", icon: Languages },
+  { id: "models", labelKey: "view.models", icon: Settings2 },
   { id: "hotkeys", labelKey: "view.hotkeys", icon: Keyboard },
   { id: "history", labelKey: "view.history", icon: History },
 ] satisfies Array<{ id: ViewId; labelKey: TranslationKey; icon: typeof Camera }>;
@@ -49,6 +51,14 @@ export const ocrProviders = [
   { value: "api-tencent", labelKey: "provider.tencentOcr" },
   { value: "api-custom", labelKey: "provider.customHttp" },
   { value: "disabled", labelKey: "provider.disabled" },
+] satisfies Array<{ value: string; labelKey: TranslationKey }>;
+
+export const ocrModes = [
+  { value: "standard", labelKey: "ocrMode.standard" },
+  { value: "lightweight", labelKey: "ocrMode.lightweight" },
+  { value: "compatible", labelKey: "ocrMode.compatible" },
+  { value: "advanced", labelKey: "ocrMode.advanced" },
+  { value: "cloud", labelKey: "ocrMode.cloud" },
 ] satisfies Array<{ value: string; labelKey: TranslationKey }>;
 
 export const translationProviders = [

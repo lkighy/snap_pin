@@ -19,8 +19,12 @@ import { cn } from "@/lib/utils";
 import {
   AppSettings,
   AppStatus,
+  drainEvents,
   getAppStatus,
   getSettings,
+  importModel,
+  listModels,
+  ModelSummary,
   runMvpFlow,
   saveSettings,
   startCapture,
@@ -41,10 +45,12 @@ export function App() {
   const [activeView, setActiveView] = useState<ViewId>("capture");
   const [status, setStatus] = useState<AppStatus>(defaultStatus);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [models, setModels] = useState<ModelSummary[]>([]);
   const [eventLog, setEventLog] = useState<string[]>([]);
   const [saveStatus, setSaveStatus] = useState<SaveStatusKey>("state.ready");
   const [error, setError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [modelManifestPath, setModelManifestPath] = useState("");
 
   const t = useMemo<Translator>(
     () => (key, values) => translate(locale, key, values),
@@ -83,11 +89,15 @@ export function App() {
     setSaveStatus("state.loaded");
   }
 
+  async function loadModels() {
+    setModels(await listModels());
+  }
+
   async function refreshAll() {
     setError(null);
     setBusyAction("refresh");
     try {
-      await Promise.all([refreshStatus(), loadSettings()]);
+      await Promise.all([refreshStatus(), loadSettings(), loadModels()]);
     } catch (caught) {
       setError(String(caught));
       setSaveStatus("state.loadFailed");
@@ -99,6 +109,33 @@ export function App() {
   useEffect(() => {
     void refreshAll();
   }, []);
+
+  useEffect(() => {
+    if (busyAction !== null) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void drainEvents()
+        .then((response) => {
+          if (response.events.length === 0) {
+            return;
+          }
+          setEventLog(response.events);
+          if (response.historySummary) {
+            setStatus((current) => ({
+              ...current,
+              historySummary: response.historySummary ?? current.historySummary,
+            }));
+          }
+        })
+        .catch((caught) => {
+          setError(String(caught));
+        });
+    }, 1000);
+
+    return () => window.clearInterval(interval);
+  }, [busyAction]);
 
   function updateSettings<K extends keyof AppSettings>(
     section: K,
@@ -186,6 +223,48 @@ export function App() {
           historySummary: response.historySummary ?? current.historySummary,
         }));
       }
+    } catch (caught) {
+      setError(String(caught));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleDrainEvents() {
+    setError(null);
+    setBusyAction("drain");
+    try {
+      const response = await drainEvents();
+      setEventLog(response.events);
+      if (response.historySummary) {
+        setStatus((current) => ({
+          ...current,
+          historySummary: response.historySummary ?? current.historySummary,
+        }));
+      }
+    } catch (caught) {
+      setError(String(caught));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleImportModel() {
+    const manifestPath = modelManifestPath.trim();
+    if (!manifestPath) {
+      return;
+    }
+
+    setError(null);
+    setBusyAction("import-model");
+    try {
+      const response = await importModel(manifestPath);
+      setEventLog(response.events);
+      setStatus((current) => ({
+        ...current,
+        modelSummary: response.modelSummary,
+      }));
+      setModels(response.models);
     } catch (caught) {
       setError(String(caught));
     } finally {
@@ -298,6 +377,22 @@ export function App() {
                   <CardTitle className="truncate">{activeTitle}</CardTitle>
                 </div>
                 <div className="flex min-w-0 flex-wrap justify-end gap-2">
+                  {activeView === "history" ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="min-w-0 shrink"
+                      onClick={handleDrainEvents}
+                      disabled={isBusy}
+                    >
+                      {busyAction === "drain" ? (
+                        <Loader2 className="animate-spin" />
+                      ) : (
+                        <RefreshCw />
+                      )}
+                      <span className="truncate">{t("button.drainEvents")}</span>
+                    </Button>
+                  ) : null}
                   <Button
                     type="button"
                     variant="outline"
@@ -332,6 +427,11 @@ export function App() {
                     activeView={activeView}
                     settings={settings}
                     updateSettings={updateSettings}
+                    modelManifestPath={modelManifestPath}
+                    onModelManifestPathChange={setModelManifestPath}
+                    onImportModel={handleImportModel}
+                    importingModel={busyAction === "import-model"}
+                    models={models}
                     t={t}
                   />
                 ) : (

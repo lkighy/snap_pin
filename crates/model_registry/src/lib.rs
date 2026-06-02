@@ -1,3 +1,15 @@
+mod download;
+mod import;
+mod sources;
+mod storage;
+
+use std::path::Path;
+
+pub use download::*;
+pub use import::*;
+pub use sources::*;
+pub use storage::*;
+
 use shared_models::{
     ModelDomain, ModelFile, ModelManifest, ModelSource, OcrLocalBackend, TranslateLocalBackend,
 };
@@ -11,6 +23,8 @@ impl ModelRegistry {
     pub fn with_builtin_defaults() -> Self {
         let mut registry = Self::default();
         registry.register(default_ocr_model());
+        registry.register(lightweight_ocr_model());
+        registry.register(compatible_ocr_model());
         registry.register(default_translation_model());
         registry
     }
@@ -23,6 +37,18 @@ impl ModelRegistry {
         }
     }
 
+    pub fn import_manifest_file(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<&ModelManifest, ModelImportError> {
+        let manifest = import_manifest_file(path)?;
+        let model_id = manifest.id.clone();
+        self.register(manifest);
+        Ok(self
+            .find(&model_id)
+            .expect("registered model must be available"))
+    }
+
     pub fn list(&self) -> &[ModelManifest] {
         &self.models
     }
@@ -32,10 +58,11 @@ impl ModelRegistry {
     }
 
     pub fn recommended_ocr(&self) -> Option<&ModelManifest> {
-        self.models
-            .iter()
-            .filter(|model| model.domain == ModelDomain::Ocr)
-            .max_by_key(|model| model.low_spec_friendly)
+        self.find("ppocr-v5-mobile-mnn").or_else(|| {
+            self.models
+                .iter()
+                .find(|model| model.domain == ModelDomain::Ocr && model.low_spec_friendly)
+        })
     }
 
     pub fn recommended_translation(
@@ -70,6 +97,52 @@ pub fn default_ocr_model() -> ModelManifest {
             ModelFile::required("rec", "rec.mnn"),
             ModelFile::required("keys", "ppocr_keys_v5.txt"),
             ModelFile::optional("cls", "cls.mnn"),
+        ],
+    }
+}
+
+pub fn lightweight_ocr_model() -> ModelManifest {
+    ModelManifest {
+        id: "ppocr-v5-mobile-fp16-mnn".to_owned(),
+        name: "PP-OCRv5 Mobile FP16 MNN".to_owned(),
+        domain: ModelDomain::Ocr,
+        family: "ppocr".to_owned(),
+        backend: backend_name(&OcrLocalBackend::Mnn),
+        version: "v5".to_owned(),
+        source_languages: vec!["zh".to_owned(), "en".to_owned()],
+        target_languages: Vec::new(),
+        quantization: Some("fp16".to_owned()),
+        low_spec_friendly: true,
+        multilingual: true,
+        source: ModelSource::BuiltIn,
+        files: vec![
+            ModelFile::required("det", "det.mnn"),
+            ModelFile::required("rec", "rec.mnn"),
+            ModelFile::required("keys", "ppocr_keys_v5.txt"),
+            ModelFile::optional("cls", ""),
+        ],
+    }
+}
+
+pub fn compatible_ocr_model() -> ModelManifest {
+    ModelManifest {
+        id: "ppocr-v4-mobile-mnn".to_owned(),
+        name: "PP-OCRv4 Mobile MNN".to_owned(),
+        domain: ModelDomain::Ocr,
+        family: "ppocr".to_owned(),
+        backend: backend_name(&OcrLocalBackend::Mnn),
+        version: "v4".to_owned(),
+        source_languages: vec!["zh".to_owned(), "en".to_owned()],
+        target_languages: Vec::new(),
+        quantization: Some("fp16".to_owned()),
+        low_spec_friendly: false,
+        multilingual: true,
+        source: ModelSource::BuiltIn,
+        files: vec![
+            ModelFile::required("det", "det.mnn"),
+            ModelFile::required("rec", "rec.mnn"),
+            ModelFile::required("keys", "ppocr_keys_v4.txt"),
+            ModelFile::optional("cls", ""),
         ],
     }
 }
@@ -125,6 +198,8 @@ mod tests {
         let registry = ModelRegistry::with_builtin_defaults();
 
         assert!(registry.find("ppocr-v5-mobile-mnn").is_some());
+        assert!(registry.find("ppocr-v5-mobile-fp16-mnn").is_some());
+        assert!(registry.find("ppocr-v4-mobile-mnn").is_some());
         assert!(registry.find("opus-mt-en-zh-ct2-int8").is_some());
         assert!(registry.recommended_ocr().is_some());
         assert!(

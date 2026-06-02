@@ -9,7 +9,13 @@ log.workspace = true
 shared_models.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
 windows = { version = "0.61.3", features = [
+    "Foundation",
+    "Globalization",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage_Streams",
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
