@@ -85,8 +85,16 @@ impl ShellState {
         format!("models: {}", model_ids)
     }
 
+    pub fn local_ocr_runtime_status(&self) -> &'static str {
+        self.core.local_ocr_runtime_status()
+    }
+
     pub fn model_manifests(&self) -> &[shared_models::ModelManifest] {
         self.core.models().list()
+    }
+
+    pub fn model_manifests_mut(&mut self) -> &mut Vec<shared_models::ModelManifest> {
+        self.core.models_mut().list_mut()
     }
 
     pub fn ipc(&mut self) -> &mut DesktopIpcBridge {

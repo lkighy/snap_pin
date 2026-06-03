@@ -27,6 +27,7 @@ pub(crate) struct CliArgs {
     pub(crate) ocr_provider: String,
     pub(crate) ocr_language_hint: Option<String>,
     pub(crate) ocr_default_model_id: Option<String>,
+    pub(crate) ocr_models_registry: Option<PathBuf>,
     pub(crate) resident: bool,
     pub(crate) control_port: u16,
 }
@@ -58,6 +59,7 @@ impl CliArgs {
             ocr_provider: "local-mnn".to_owned(),
             ocr_language_hint: None,
             ocr_default_model_id: None,
+            ocr_models_registry: None,
             resident: false,
             control_port: 47232,
         };
@@ -121,6 +123,10 @@ impl CliArgs {
                 }
                 "--ocr-default-model-id" => {
                     parsed.ocr_default_model_id = args.next().filter(|value| !value.is_empty())
+                }
+                "--ocr-models-registry" => {
+                    parsed.ocr_models_registry =
+                        args.next().filter(|value| !value.is_empty()).map(PathBuf::from)
                 }
                 _ => {}
             }

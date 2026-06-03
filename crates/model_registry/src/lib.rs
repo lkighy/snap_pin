@@ -53,6 +53,10 @@ impl ModelRegistry {
         &self.models
     }
 
+    pub fn list_mut(&mut self) -> &mut Vec<ModelManifest> {
+        &mut self.models
+    }
+
     pub fn find(&self, id: &str) -> Option<&ModelManifest> {
         self.models.iter().find(|model| model.id == id)
     }

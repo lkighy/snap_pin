@@ -6,7 +6,7 @@
       "type": "lldb",
       "request": "launch",
       "cargo": {
-        "args": ["build", "-p", "tauri_desktop"],
+        "args": ["build", "-p", "tauri_desktop", "--features", "local-ocr-rs"],
         "filter": {
           "name": "tauri_desktop",
           "kind": "bin"
@@ -14,6 +14,9 @@
       },
       "args": [],
       "cwd": "${workspaceFolder}",
+      "env": {
+        "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}"
+      },
       "preLaunchTask": "ui: ensure dev"
     },
     {
@@ -21,14 +24,17 @@
       "type": "lldb",
       "request": "launch",
       "cargo": {
-        "args": ["build", "-p", "tauri_desktop"],
+        "args": ["build", "-p", "tauri_desktop", "--features", "local-ocr-rs"],
         "filter": {
           "name": "tauri_desktop",
           "kind": "bin"
         }
       },
       "args": ["--mvp-cli"],
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}"
+      }
     }
   ]
 }

@@ -13,6 +13,17 @@ pub fn prompt_save_png_path_with_owner(
     platform::prompt_save_png_path(default_file_name, owner_hwnd)
 }
 
+pub fn prompt_folder_path(title: &str) -> Result<Option<PathBuf>, PlatformError> {
+    platform::prompt_folder_path(title, None)
+}
+
+pub fn prompt_folder_path_with_owner(
+    title: &str,
+    owner_hwnd: Option<isize>,
+) -> Result<Option<PathBuf>, PlatformError> {
+    platform::prompt_folder_path(title, owner_hwnd)
+}
+
 #[cfg(windows)]
 mod platform {
     use std::ffi::OsStr;
@@ -31,7 +42,8 @@ mod platform {
     use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
     use windows::Win32::UI::Shell::{
         FOS_FORCEFILESYSTEM, FOS_NOCHANGEDIR, FOS_OVERWRITEPROMPT, FOS_PATHMUSTEXIST,
-        FileSaveDialog, IFileSaveDialog, SIGDN_FILESYSPATH,
+        FOS_PICKFOLDERS, FileOpenDialog, FileSaveDialog, IFileOpenDialog, IFileSaveDialog,
+        SIGDN_FILESYSPATH,
     };
     use windows::core::{HRESULT, HSTRING, PCWSTR};
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
@@ -69,6 +81,66 @@ mod platform {
         }
 
         prompt_save_png_path_legacy(default_file_name, owner_hwnd)
+    }
+
+    pub fn prompt_folder_path(
+        title: &str,
+        owner_hwnd: Option<isize>,
+    ) -> Result<Option<PathBuf>, PlatformError> {
+        log::info!("folder dialog requested title={} owner={:?}", title, owner_hwnd);
+        let _com = ComApartment::initialize()?;
+        let dialog: IFileOpenDialog =
+            unsafe { CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) }
+                .map_err(|error| folder_dialog_error("create", error))?;
+
+        unsafe {
+            dialog
+                .SetTitle(&HSTRING::from(title))
+                .map_err(|error| folder_dialog_error("set title", error))?;
+            dialog
+                .SetOptions(FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST)
+                .map_err(|error| folder_dialog_error("set options", error))?;
+        }
+
+        let owner = valid_hwnd(owner_hwnd);
+        let fallback_owner = if owner.is_none() {
+            Some(DialogOwnerWindow::new(true)?)
+        } else {
+            None
+        };
+        let owner = owner.or_else(|| fallback_owner.as_ref().map(|window| window.hwnd));
+        log::info!(
+            "showing folder dialog owner={:?} fallback_owner={}",
+            owner,
+            fallback_owner.is_some()
+        );
+
+        match unsafe { dialog.Show(owner.map(WindowsHwnd)) } {
+            Ok(()) => {}
+            Err(error) if is_dialog_canceled(error.code()) => {
+                log::info!("folder dialog canceled");
+                return Ok(None);
+            }
+            Err(error) => return Err(folder_dialog_error("show", error)),
+        }
+
+        let result = unsafe { dialog.GetResult() }
+            .map_err(|error| folder_dialog_error("get result", error))?;
+        let path = unsafe { result.GetDisplayName(SIGDN_FILESYSPATH) }
+            .map_err(|error| folder_dialog_error("get folder path", error))?;
+        let path_string = unsafe { path.to_string() }
+            .map_err(|error| PlatformError::new("folder_dialog_failed", error.to_string()))?;
+        unsafe {
+            CoTaskMemFree(Some(path.as_ptr().cast()));
+        }
+
+        if path_string.is_empty() {
+            log::info!("folder dialog returned empty path");
+            Ok(None)
+        } else {
+            log::info!("folder dialog selected {}", path_string);
+            Ok(Some(PathBuf::from(path_string)))
+        }
     }
 
     fn prompt_save_png_path_modern(
@@ -352,6 +424,13 @@ mod platform {
         )
     }
 
+    fn folder_dialog_error(action: &str, error: windows::core::Error) -> PlatformError {
+        PlatformError::new(
+            "folder_dialog_failed",
+            format!("Windows folder dialog failed to {action}: {error}"),
+        )
+    }
+
     fn is_dialog_canceled(code: HRESULT) -> bool {
         code == E_ABORT || code == HRESULT::from_win32(ERROR_CANCELLED.0)
     }
@@ -428,6 +507,16 @@ mod platform {
         Err(PlatformError::new(
             "unsupported_platform",
             "save file dialogs are currently implemented only on Windows",
+        ))
+    }
+
+    pub fn prompt_folder_path(
+        _title: &str,
+        _owner_hwnd: Option<isize>,
+    ) -> Result<Option<PathBuf>, PlatformError> {
+        Err(PlatformError::new(
+            "unsupported_platform",
+            "folder dialogs are currently implemented only on Windows",
         ))
     }
 }

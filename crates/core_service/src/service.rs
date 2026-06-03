@@ -5,8 +5,8 @@ use std::thread;
 use model_registry::ModelRegistry;
 use ocr_engine::{OcrEngine, RoutedOcrEngine};
 use shared_models::{
-    CoreCommand, CoreEvent, ImageData, LanguageCode, OcrJob, OcrLocalBackend, OcrProvider,
-    OcrRunMode, Settings, TranslateProvider, TranslationRequest,
+    CoreCommand, CoreEvent, ImageData, LanguageCode, OcrJob, OcrProvider, Settings,
+    TranslateProvider, TranslationRequest,
 };
 use translate_engine::{MockTranslateEngine, TranslateEngine};
 
@@ -101,6 +101,10 @@ impl CoreService {
         &self.models
     }
 
+    pub fn models_mut(&mut self) -> &mut ModelRegistry {
+        &mut self.models
+    }
+
     pub fn capabilities(&self) -> Vec<&'static str> {
         vec![
             "screenshot",
@@ -111,6 +115,10 @@ impl CoreService {
             "clipboard",
             "plugins",
         ]
+    }
+
+    pub fn local_ocr_runtime_status(&self) -> &'static str {
+        ocr_engine::local_runtime_status()
     }
 
     pub fn managers_ready(&self) -> bool {
@@ -177,8 +185,6 @@ impl CoreService {
     }
 
     fn run_ocr(&mut self, mut job: OcrJob) -> Vec<CoreEvent> {
-        self.apply_ocr_mode_defaults(&mut job);
-
         if job.provider == OcrProvider::Disabled {
             job.provider = self.settings.ocr.provider.clone();
         }
@@ -333,12 +339,17 @@ impl CoreService {
     }
 
     fn apply_default_ocr_model(&mut self, job: &mut OcrJob) {
-        if job.model_id.is_none() {
-            job.model_id = self.models.recommended_ocr().map(|model| model.id.clone());
-        }
-
         if !matches!(job.provider, OcrProvider::Local(_)) {
             return;
+        }
+
+        if job.model_id.is_none() {
+            job.model_id = self
+                .settings
+                .ocr
+                .default_model_id
+                .clone()
+                .or_else(|| self.models.recommended_ocr().map(|model| model.id.clone()));
         }
 
         if let Some(model) = job.model_id.as_deref().and_then(|id| self.models.find(id)) {
@@ -351,47 +362,6 @@ impl CoreService {
                     error.message
                 );
             }
-        }
-    }
-
-    fn apply_ocr_mode_defaults(&self, job: &mut OcrJob) {
-        if matches!(job.provider, OcrProvider::System) {
-            return;
-        }
-
-        match self.settings.ocr.mode {
-            OcrRunMode::Lightweight => {
-                job.provider = OcrProvider::Local(OcrLocalBackend::Mnn);
-                job.model_id = self
-                    .settings
-                    .ocr
-                    .default_model_id
-                    .clone()
-                    .or_else(|| Some("ppocr-v5-mobile-fp16-mnn".to_owned()));
-            }
-            OcrRunMode::Standard => {
-                job.provider = OcrProvider::Local(OcrLocalBackend::Mnn);
-                job.model_id = self
-                    .settings
-                    .ocr
-                    .default_model_id
-                    .clone()
-                    .or_else(|| Some("ppocr-v5-mobile-mnn".to_owned()));
-            }
-            OcrRunMode::Compatible => {
-                job.provider = OcrProvider::Local(OcrLocalBackend::Mnn);
-                job.model_id = self
-                    .settings
-                    .ocr
-                    .default_model_id
-                    .clone()
-                    .or_else(|| Some("ppocr-v4-mobile-mnn".to_owned()));
-            }
-            OcrRunMode::Cloud => {
-                job.provider = self.settings.ocr.provider.clone();
-                job.provider_profile_id = self.settings.ocr.default_provider_profile_id.clone();
-            }
-            OcrRunMode::Advanced => {}
         }
     }
 

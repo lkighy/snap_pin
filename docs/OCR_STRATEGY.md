@@ -238,6 +238,10 @@ ocr-rs / rust-paddle-ocr + MNN 后端
 ort + ONNXRuntime
 ```
 
+状态：推迟到 0.1 发布之后再评估，详见
+[POST_0_1_OCR_BACKENDS.md](POST_0_1_OCR_BACKENDS.md)。0.1 阶段 UI 只暴露
+Local MNN 作为本地模型 runtime。
+
 适用场景：
 
 - 用户选择 ONNX 模型。

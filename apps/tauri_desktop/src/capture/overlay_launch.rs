@@ -29,12 +29,42 @@ impl OverlayLaunch {
                     .arg("run")
                     .arg("-p")
                     .arg("egui_overlay")
+                    .arg("--features")
+                    .arg("local-ocr-rs")
                     .arg("--")
                     .args(overlay_args)
                     .current_dir(workspace);
+                prepend_mnn_dll_path(&mut command, workspace);
                 command
             }
         }
+    }
+}
+
+fn prepend_mnn_dll_path(command: &mut std::process::Command, workspace: &Path) {
+    let mnn_lib = workspace
+        .join("third_party")
+        .join("ocr-rs-2.2.2")
+        .join("3rd_party")
+        .join("prebuilt")
+        .join("mnn-dev-windows-x86_64")
+        .join("lib");
+
+    if !mnn_lib.exists() {
+        return;
+    }
+
+    let path = match std::env::var_os("PATH") {
+        Some(current) => {
+            let mut paths = vec![mnn_lib];
+            paths.extend(std::env::split_paths(&current));
+            std::env::join_paths(paths).ok()
+        }
+        None => Some(mnn_lib.into_os_string()),
+    };
+
+    if let Some(path) = path {
+        command.env("PATH", path);
     }
 }
 

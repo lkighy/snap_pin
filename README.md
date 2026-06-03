@@ -10,6 +10,8 @@ adding implementation code.
 
 OCR-specific model and runtime decisions are tracked in
 [docs/OCR_STRATEGY.md](docs/OCR_STRATEGY.md).
+OCR backends deferred until after 0.1 are tracked in
+[docs/POST_0_1_OCR_BACKENDS.md](docs/POST_0_1_OCR_BACKENDS.md).
 
 Translation-specific model and runtime decisions are tracked in
 [docs/TRANSLATION_STRATEGY.md](docs/TRANSLATION_STRATEGY.md).

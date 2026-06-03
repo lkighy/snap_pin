@@ -28,10 +28,18 @@ fn main() {
             commands::tauri::app_status,
             commands::tauri::get_settings,
             commands::tauri::list_models,
+            commands::tauri::model_storage_info,
+            commands::tauri::choose_ocr_model_storage_dir,
+            commands::tauri::set_ocr_model_storage_dir,
+            commands::tauri::open_ocr_model_storage_dir,
             commands::tauri::save_settings,
             commands::tauri::run_mvp_flow,
             commands::tauri::drain_events,
             commands::tauri::import_model,
+            commands::tauri::download_builtin_ocr_model,
+            commands::tauri::start_builtin_ocr_model_download,
+            commands::tauri::model_download_status,
+            commands::tauri::cancel_model_download,
             commands::tauri::start_capture
         ])
         .setup(|app| {
@@ -39,6 +47,7 @@ fn main() {
             let app_handle = app.handle().clone();
             let state = ShellState::from_store(&app_handle);
             app.manage(Mutex::new(state));
+            app.manage(Mutex::new(commands::tauri::ModelDownloadRuntime::default()));
             app.manage(Mutex::new(None::<platform_win32::HotkeyListener>));
             app.manage(Mutex::new(
                 capture::launcher::CaptureOverlayRuntime::default(),

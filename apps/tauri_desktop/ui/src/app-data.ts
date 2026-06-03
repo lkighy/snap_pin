@@ -41,8 +41,6 @@ export const completionActions = [
 
 export const ocrProviders = [
   { value: "local-mnn", labelKey: "provider.localMnn" },
-  { value: "local-onnx", labelKey: "provider.localOnnx" },
-  { value: "local-paddle", labelKey: "provider.localPaddle" },
   { value: "system", labelKey: "provider.systemOcr" },
   { value: "api-openai", labelKey: "provider.openAi" },
   { value: "api-azure", labelKey: "provider.azureVision" },
@@ -51,14 +49,6 @@ export const ocrProviders = [
   { value: "api-tencent", labelKey: "provider.tencentOcr" },
   { value: "api-custom", labelKey: "provider.customHttp" },
   { value: "disabled", labelKey: "provider.disabled" },
-] satisfies Array<{ value: string; labelKey: TranslationKey }>;
-
-export const ocrModes = [
-  { value: "standard", labelKey: "ocrMode.standard" },
-  { value: "lightweight", labelKey: "ocrMode.lightweight" },
-  { value: "compatible", labelKey: "ocrMode.compatible" },
-  { value: "advanced", labelKey: "ocrMode.advanced" },
-  { value: "cloud", labelKey: "ocrMode.cloud" },
 ] satisfies Array<{ value: string; labelKey: TranslationKey }>;
 
 export const translationProviders = [
@@ -88,6 +78,7 @@ export const defaultStatus: AppStatus = {
   bootSummary: "Starting desktop shell...",
   modelSummary: "Loading...",
   historySummary: "Loading...",
+  localOcrRuntimeStatus: "local-ocr-rs-disabled",
 };
 
 export type SaveStatusKey =

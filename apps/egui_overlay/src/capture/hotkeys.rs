@@ -56,6 +56,27 @@ pub(crate) fn command_shortcut_pressed(input: &InputState, key: Key) -> bool {
         && !input.modifiers.alt)
 }
 
+pub(crate) fn command_shift_shortcut_pressed(input: &InputState, key: Key) -> bool {
+    input.events.iter().any(|event| match event {
+        Event::Key {
+            key: event_key,
+            physical_key,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        } => {
+            (*event_key == key || *physical_key == Some(key))
+                && (modifiers.ctrl || modifiers.command)
+                && modifiers.shift
+                && !modifiers.alt
+        }
+        _ => false,
+    }) || (input.key_pressed(key)
+        && (input.modifiers.ctrl || input.modifiers.command)
+        && input.modifiers.shift
+        && !input.modifiers.alt)
+}
+
 fn hotkey_modifiers_match(hotkey: &OverlayHotkey, modifiers: &egui::Modifiers) -> bool {
     let ctrl_down = modifiers.ctrl || modifiers.command;
     ctrl_down == hotkey.ctrl

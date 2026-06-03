@@ -19,14 +19,23 @@ import { cn } from "@/lib/utils";
 import {
   AppSettings,
   AppStatus,
+  cancelModelDownload,
+  chooseOcrModelStorageDir,
   drainEvents,
+  getModelStorageInfo,
+  getModelDownloadStatus,
   getAppStatus,
   getSettings,
   importModel,
   listModels,
+  ModelDownloadStatus,
+  ModelStorageInfo,
   ModelSummary,
+  openOcrModelStorageDir,
   runMvpFlow,
   saveSettings,
+  setOcrModelStorageDir,
+  startBuiltinOcrModelDownload,
   startCapture,
 } from "@/lib/tauri";
 import {
@@ -51,6 +60,11 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [modelManifestPath, setModelManifestPath] = useState("");
+  const [modelStorageInfo, setModelStorageInfo] =
+    useState<ModelStorageInfo | null>(null);
+  const [modelStoragePath, setModelStoragePath] = useState("");
+  const [modelDownloadStatus, setModelDownloadStatus] =
+    useState<ModelDownloadStatus | null>(null);
 
   const t = useMemo<Translator>(
     () => (key, values) => translate(locale, key, values),
@@ -93,11 +107,22 @@ export function App() {
     setModels(await listModels());
   }
 
+  async function loadModelStorageInfo() {
+    const info = await getModelStorageInfo();
+    setModelStorageInfo(info);
+    setModelStoragePath(info.currentOcrModelsDir);
+  }
+
   async function refreshAll() {
     setError(null);
     setBusyAction("refresh");
     try {
-      await Promise.all([refreshStatus(), loadSettings(), loadModels()]);
+      await Promise.all([
+        refreshStatus(),
+        loadSettings(),
+        loadModels(),
+        loadModelStorageInfo(),
+      ]);
     } catch (caught) {
       setError(String(caught));
       setSaveStatus("state.loadFailed");
@@ -136,6 +161,18 @@ export function App() {
 
     return () => window.clearInterval(interval);
   }, [busyAction]);
+
+  useEffect(() => {
+    if (!modelDownloadStatus?.running) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void refreshModelDownloadStatus();
+    }, 500);
+
+    return () => window.clearInterval(interval);
+  }, [modelDownloadStatus?.running]);
 
   function updateSettings<K extends keyof AppSettings>(
     section: K,
@@ -265,6 +302,111 @@ export function App() {
         modelSummary: response.modelSummary,
       }));
       setModels(response.models);
+      setSettings(response.settings);
+    } catch (caught) {
+      setError(String(caught));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  function applyModelDownloadResult(response: NonNullable<ModelDownloadStatus["result"]>) {
+    setEventLog(response.events);
+    setStatus((current) => ({
+      ...current,
+      modelSummary: response.modelSummary,
+    }));
+    setModels(response.models);
+    setSettings(response.settings);
+  }
+
+  async function refreshModelDownloadStatus() {
+    try {
+      const nextStatus = await getModelDownloadStatus();
+      setModelDownloadStatus(nextStatus);
+      if (nextStatus?.result) {
+        applyModelDownloadResult(nextStatus.result);
+        setBusyAction(null);
+      }
+      if (nextStatus?.error) {
+        setError(nextStatus.error);
+        setBusyAction(null);
+      }
+      if (nextStatus && !nextStatus.running) {
+        setBusyAction(null);
+      }
+    } catch (caught) {
+      setError(String(caught));
+      setBusyAction(null);
+    }
+  }
+
+  async function handleDownloadOcrModel(modelId: string) {
+    setError(null);
+    setBusyAction("download-ocr-model");
+    try {
+      const nextStatus = await startBuiltinOcrModelDownload(modelId);
+      setModelDownloadStatus(nextStatus);
+    } catch (caught) {
+      setError(String(caught));
+      setBusyAction(null);
+    }
+  }
+
+  async function handleCancelModelDownload() {
+    try {
+      const nextStatus = await cancelModelDownload();
+      setModelDownloadStatus(nextStatus);
+      if (nextStatus?.error) {
+        setError(nextStatus.error);
+      }
+    } finally {
+      await refreshModelDownloadStatus();
+    }
+  }
+
+  async function handleChooseModelStorageDir() {
+    setError(null);
+    setBusyAction("model-storage");
+    try {
+      const info = await chooseOcrModelStorageDir();
+      if (info) {
+        setModelStorageInfo(info);
+        setModelStoragePath(info.currentOcrModelsDir);
+        await loadModels();
+      }
+    } catch (caught) {
+      setError(String(caught));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleApplyModelStorageDir() {
+    const path = modelStoragePath.trim();
+    if (!path) {
+      return;
+    }
+
+    setError(null);
+    setBusyAction("model-storage");
+    try {
+      const info = await setOcrModelStorageDir(path);
+      setModelStorageInfo(info);
+      setModelStoragePath(info.currentOcrModelsDir);
+      await loadModels();
+    } catch (caught) {
+      setError(String(caught));
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function handleOpenModelStorageDir() {
+    setError(null);
+    setBusyAction("open-model-storage");
+    try {
+      await openOcrModelStorageDir();
     } catch (caught) {
       setError(String(caught));
     } finally {
@@ -429,9 +571,25 @@ export function App() {
                     updateSettings={updateSettings}
                     modelManifestPath={modelManifestPath}
                     onModelManifestPathChange={setModelManifestPath}
+                    modelStorageInfo={modelStorageInfo}
+                    modelStoragePath={modelStoragePath}
+                    onModelStoragePathChange={setModelStoragePath}
                     onImportModel={handleImportModel}
+                    onDownloadOcrModel={handleDownloadOcrModel}
+                    onCancelModelDownload={handleCancelModelDownload}
+                    onChooseModelStorageDir={handleChooseModelStorageDir}
+                    onApplyModelStorageDir={handleApplyModelStorageDir}
+                    onOpenModelStorageDir={handleOpenModelStorageDir}
+                    onOpenModels={() => setActiveView("models")}
                     importingModel={busyAction === "import-model"}
+                    managingModelStorage={
+                      busyAction === "model-storage" ||
+                      busyAction === "open-model-storage"
+                    }
+                    downloadingOcrModel={busyAction === "download-ocr-model"}
+                    modelDownloadStatus={modelDownloadStatus}
                     models={models}
+                    status={status}
                     t={t}
                   />
                 ) : (

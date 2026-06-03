@@ -72,9 +72,12 @@
       "label": "tauri: dev",
       "type": "shell",
       "command": "cargo",
-      "args": ["run", "-p", "tauri_desktop"],
+      "args": ["run", "-p", "tauri_desktop", "--features", "local-ocr-rs"],
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}"
+        }
       },
       "dependsOn": ["ui: ensure dev"],
       "problemMatcher": "$rustc"

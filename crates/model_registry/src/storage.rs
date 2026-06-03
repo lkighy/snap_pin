@@ -54,7 +54,7 @@ impl ModelStorage {
         Ok(manifest)
     }
 
-    fn model_dir(&self, model_id: &str) -> PathBuf {
+    pub(crate) fn model_dir(&self, model_id: &str) -> PathBuf {
         self.root.join(safe_model_id(model_id))
     }
 }

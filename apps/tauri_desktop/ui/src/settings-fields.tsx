@@ -47,16 +47,23 @@ function FieldFrame({
 export function SwitchField({
   label,
   checked,
+  disabled = false,
   onCheckedChange,
 }: {
   label: string;
   checked: boolean;
+  disabled?: boolean;
   onCheckedChange: (checked: boolean) => void;
 }) {
   return (
     <div className="flex min-h-[62px] min-w-0 items-center justify-between gap-3 rounded-md border bg-background/70 px-3 py-2">
       <Label className="min-w-0 break-words text-sm">{label}</Label>
-      <Switch className="shrink-0" checked={checked} onCheckedChange={onCheckedChange} />
+      <Switch
+        className="shrink-0"
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={onCheckedChange}
+      />
     </div>
   );
 }
@@ -332,7 +339,7 @@ export function SelectField({
 }: {
   label: string;
   value: string;
-  options: ReadonlyArray<{ value: string; label: string }>;
+  options: ReadonlyArray<{ value: string; label: string; disabled?: boolean }>;
   onValueChange: (value: string) => void;
 }) {
   return (
@@ -343,7 +350,11 @@ export function SelectField({
         </SelectTrigger>
         <SelectContent>
           {options.map((option) => (
-            <SelectItem key={option.value} value={option.value}>
+            <SelectItem
+              key={option.value}
+              value={option.value}
+              disabled={option.disabled}
+            >
               {option.label}
             </SelectItem>
           ))}

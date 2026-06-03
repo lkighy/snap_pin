@@ -33,7 +33,9 @@ use shared_models::{
     OcrProvider, OcrResult, Point, Rect, Size, TextOverlay,
 };
 
-use capture::hotkeys::{command_shortcut_pressed, copy_shortcut_pressed, hotkey_pressed};
+use capture::hotkeys::{
+    command_shift_shortcut_pressed, command_shortcut_pressed, copy_shortcut_pressed, hotkey_pressed,
+};
 use capture::paint::{
     draw_error, draw_hint, draw_magnifier, draw_pin_border, draw_selection_mask, draw_size_label,
     draw_toolbar, format_color_value, snapshot_color_at, toolbar_action_at,
@@ -65,9 +67,17 @@ const PIN_MIN_HEIGHT: f32 = 72.0;
 const PIN_MAX_SIDE: f32 = 8192.0;
 const PIN_TOOLBAR_BUTTON_SIZE: f32 = 30.0;
 const PIN_TOOLBAR_BUTTON_GAP: f32 = 6.0;
+const PIN_TOOLBAR_MAX_BUTTONS: usize = 7;
 const PIN_TOOLBAR_PADDING: f32 = 6.0;
 const PIN_TOOLBAR_MARGIN: f32 = 8.0;
 const PIN_TOOLBAR_OUTSIDE_GAP: f32 = 4.0;
+const OCR_TEXT_OVERLAY_PADDING_X: f32 = 2.0;
+const OCR_TEXT_OVERLAY_PADDING_Y: f32 = 1.0;
+const OCR_TEXT_INTERACTION_PADDING_X: f32 = 4.0;
+const OCR_TEXT_INTERACTION_PADDING_Y: f32 = 6.0;
+const OCR_TEXT_FONT_HEIGHT_RATIO: f32 = 0.54;
+const OCR_TEXT_FONT_MIN_SIZE: f32 = 7.0;
+const OCR_TEXT_FONT_MAX_SIZE: f32 = 42.0;
 
 fn main() -> eframe::Result<()> {
     init_logging();
@@ -167,6 +177,7 @@ struct CaptureOverlayApp {
     ocr_provider: String,
     ocr_language_hint: Option<String>,
     ocr_default_model_id: Option<String>,
+    ocr_models_registry: Option<PathBuf>,
     resident: bool,
     command_queue: Option<OverlayCommandQueue>,
     snapshot_path: Option<PathBuf>,
@@ -222,6 +233,7 @@ impl CaptureOverlayApp {
             ocr_provider: args.ocr_provider,
             ocr_language_hint: args.ocr_language_hint,
             ocr_default_model_id: args.ocr_default_model_id,
+            ocr_models_registry: args.ocr_models_registry,
             resident: args.resident,
             command_queue,
             snapshot_path: args.snapshot,
@@ -664,6 +676,7 @@ impl CaptureOverlayApp {
             ocr_provider: &self.ocr_provider,
             ocr_language_hint: self.ocr_language_hint.as_deref(),
             ocr_default_model_id: self.ocr_default_model_id.as_deref(),
+            ocr_models_registry: self.ocr_models_registry.as_deref(),
         })
         .map_err(|error| format!("{}: {error}", self.text.pin_spawn_failed))
     }
@@ -787,6 +800,10 @@ impl CaptureOverlayApp {
         self.ocr_provider = command.ocr_provider;
         self.ocr_language_hint = empty_to_none(command.ocr_language_hint);
         self.ocr_default_model_id = empty_to_none(command.ocr_default_model_id);
+        self.ocr_models_registry = command.ocr_models_registry.and_then(|path| {
+            let path = path.trim();
+            (!path.is_empty()).then(|| PathBuf::from(path))
+        });
         if let Some(color) = parse_color(&command.border_color) {
             self.border_color = color;
         }
@@ -988,6 +1005,8 @@ struct OverlayCaptureCommand {
     ocr_language_hint: Option<String>,
     #[serde(default)]
     ocr_default_model_id: Option<String>,
+    #[serde(default)]
+    ocr_models_registry: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -1533,6 +1552,7 @@ struct PinWindowLaunch<'a> {
     ocr_provider: &'a str,
     ocr_language_hint: Option<&'a str>,
     ocr_default_model_id: Option<&'a str>,
+    ocr_models_registry: Option<&'a std::path::Path>,
 }
 
 fn spawn_pin_window(launch: &PinWindowLaunch<'_>) -> Result<(), String> {
@@ -1573,6 +1593,8 @@ fn spawn_pin_window(launch: &PinWindowLaunch<'_>) -> Result<(), String> {
         .arg(launch.ocr_language_hint.unwrap_or(""))
         .arg("--ocr-default-model-id")
         .arg(launch.ocr_default_model_id.unwrap_or(""))
+        .arg("--ocr-models-registry")
+        .arg(launch.ocr_models_registry.unwrap_or_else(|| std::path::Path::new("")))
         .spawn()
         .map_err(|error| error.to_string())?;
     log::info!("pin window spawned pid={}", child.id());
@@ -1593,9 +1615,11 @@ struct PinWindowApp {
     ocr_provider: OcrProvider,
     ocr_language_hint: Option<String>,
     ocr_default_model_id: Option<String>,
+    ocr_models_registry: Option<PathBuf>,
     ocr_receiver: Option<mpsc::Receiver<Result<OcrResult, String>>>,
     ocr_result: Option<OcrResult>,
     ocr_status: Option<String>,
+    selected_ocr_block: Option<usize>,
 }
 
 impl PinWindowApp {
@@ -1616,9 +1640,11 @@ impl PinWindowApp {
             ocr_provider: parse_ocr_provider(&args.ocr_provider),
             ocr_language_hint: args.ocr_language_hint,
             ocr_default_model_id: args.ocr_default_model_id,
+            ocr_models_registry: args.ocr_models_registry,
             ocr_receiver: None,
             ocr_result: None,
             ocr_status: None,
+            selected_ocr_block: None,
         };
         let level = if args.pin_always_on_top {
             WindowLevel::AlwaysOnTop
@@ -1666,6 +1692,14 @@ impl PinWindowApp {
     fn handle_shortcuts(&mut self, ctx: &Context) {
         if ctx.input(|input| input.key_pressed(Key::Escape)) {
             ctx.send_viewport_cmd(ViewportCommand::Close);
+        }
+
+        if ctx.input(|input| command_shift_shortcut_pressed(input, Key::C)) {
+            self.copy_all_ocr_text();
+            ctx.request_repaint();
+        } else if ctx.input(copy_shortcut_pressed) {
+            self.copy_selected_ocr_text_or_image();
+            ctx.request_repaint();
         }
 
         let (scroll, ctrl_down, viewport_rect, pointer_pos) = ctx.input(|input| {
@@ -1772,21 +1806,34 @@ impl PinWindowApp {
         let pointer_pos = ctx.input(|input| input.pointer.interact_pos());
         let pointer_over_toolbar =
             pointer_pos.is_some_and(|position| self.toolbar_contains(position, canvas, image_rect));
+        let pointer_over_ocr =
+            pointer_pos.is_some_and(|position| self.ocr_block_at(position, image_rect).is_some());
         let pointer_over_image = pointer_pos.is_some_and(|position| image_rect.contains(position));
 
         if response.double_clicked_by(PointerButton::Primary)
             && pointer_over_image
             && !pointer_over_toolbar
+            && !pointer_over_ocr
         {
             ctx.send_viewport_cmd(ViewportCommand::Close);
             return;
         }
 
+        if response.clicked_by(PointerButton::Primary) && pointer_over_ocr {
+            self.selected_ocr_block =
+                pointer_pos.and_then(|position| self.ocr_block_at(position, image_rect));
+            self.hide_toolbar(ctx, canvas);
+            ctx.request_repaint();
+            return;
+        }
+
         if response.clicked_by(PointerButton::Primary) && !pointer_over_toolbar {
+            self.selected_ocr_block = None;
             self.hide_toolbar(ctx, canvas);
         }
 
-        if response.dragged_by(PointerButton::Primary) && !pointer_over_toolbar {
+        if response.dragged_by(PointerButton::Primary) && !pointer_over_toolbar && !pointer_over_ocr
+        {
             ctx.send_viewport_cmd(ViewportCommand::StartDrag);
         }
     }
@@ -1802,7 +1849,11 @@ impl PinWindowApp {
         }
 
         let position = ctx.input(|input| input.pointer.interact_pos())?;
-        pin_toolbar_action_at(position, self.toolbar_rect(canvas, image_rect)?, self.text)
+        pin_toolbar_action_at(
+            position,
+            self.toolbar_rect(canvas, image_rect)?,
+            self.toolbar_state(),
+        )
     }
 
     fn run_toolbar_action(&mut self, ctx: &Context, canvas: EguiRect, action: PinToolbarAction) {
@@ -1812,6 +1863,10 @@ impl PinWindowApp {
             PinToolbarAction::RunOcr => {
                 self.run_ocr_for_pin(ctx);
             }
+            PinToolbarAction::CopyImage => self.copy_pin_image(),
+            PinToolbarAction::CopySelectedText => self.copy_selected_ocr_text(),
+            PinToolbarAction::CopyAllText => self.copy_all_ocr_text(),
+            PinToolbarAction::SaveImage => self.save_pin_image(),
             PinToolbarAction::Translate => {
                 log::info!(
                     "pin toolbar requested translation image={:?}; core-service IPC hook pending",
@@ -1883,7 +1938,7 @@ impl PinWindowApp {
 
     fn toolbar_rect(&self, canvas: EguiRect, image_rect: EguiRect) -> Option<EguiRect> {
         self.toolbar_edge
-            .map(|edge| pin_toolbar_rect(canvas, image_rect, edge))
+            .map(|edge| pin_toolbar_rect(canvas, image_rect, edge, self.toolbar_state()))
     }
 
     fn toolbar_contains(&self, position: Pos2, canvas: EguiRect, image_rect: EguiRect) -> bool {
@@ -1896,7 +1951,15 @@ impl PinWindowApp {
             return;
         };
 
-        draw_pin_toolbar(painter, canvas, toolbar, self.text);
+        draw_pin_toolbar(painter, canvas, toolbar, self.toolbar_state());
+    }
+
+    fn toolbar_state(&self) -> PinToolbarState {
+        PinToolbarState {
+            text: self.text,
+            has_ocr_text: self.all_ocr_text().is_some(),
+            has_selected_ocr_text: self.selected_ocr_text().is_some(),
+        }
     }
 
     fn draw_ocr_overlays(&self, painter: &Painter, image_rect: EguiRect) {
@@ -1905,7 +1968,7 @@ impl PinWindowApp {
         };
 
         let image_size = Size::new(self.image_size.x.max(1.0), self.image_size.y.max(1.0));
-        for block in &result.blocks {
+        for (index, block) in result.blocks.iter().enumerate() {
             let overlay = TextOverlay {
                 text: block.text.clone(),
                 language: block.language.clone(),
@@ -1913,7 +1976,13 @@ impl PinWindowApp {
                 role: shared_models::TextOverlayRole::Ocr,
                 confidence: block.confidence,
             };
-            draw_text_overlay(painter, image_rect, image_size, &overlay);
+            draw_text_overlay(
+                painter,
+                image_rect,
+                image_size,
+                &overlay,
+                self.selected_ocr_block == Some(index),
+            );
         }
     }
 
@@ -1930,12 +1999,14 @@ impl PinWindowApp {
 
         self.ocr_status = Some("OCR running...".to_owned());
         self.ocr_result = None;
+        self.selected_ocr_block = None;
 
         let request = PinOcrRequest {
             path,
             provider: self.ocr_provider.clone(),
             language_hint: self.ocr_language_hint.clone(),
             default_model_id: self.ocr_default_model_id.clone(),
+            models_registry: self.ocr_models_registry.clone(),
             load_error_prefix: self.text.pin_load_failed.to_owned(),
         };
         let (sender, receiver) = mpsc::channel();
@@ -1967,12 +2038,173 @@ impl PinWindowApp {
                     result.plain_text.chars().count()
                 );
                 self.ocr_status = None;
+                self.selected_ocr_block = None;
                 self.ocr_result = Some(result);
             }
             Err(error) => {
                 log::error!("pin OCR failed: {error}");
                 self.ocr_result = None;
+                self.selected_ocr_block = None;
                 self.ocr_status = Some(error);
+            }
+        }
+    }
+
+    fn ocr_block_at(&self, position: Pos2, image_rect: EguiRect) -> Option<usize> {
+        let result = self.ocr_result.as_ref()?;
+        let image_size = Size::new(self.image_size.x.max(1.0), self.image_size.y.max(1.0));
+        result
+            .blocks
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, block)| {
+                !block.text.trim().is_empty()
+                    && ocr_block_interaction_rect(image_rect, image_size, block.bounds)
+                        .contains(position)
+            })
+            .map(|(index, _)| index)
+    }
+
+    fn selected_ocr_text(&self) -> Option<String> {
+        let result = self.ocr_result.as_ref()?;
+        if let Some(index) = self.selected_ocr_block {
+            return result
+                .blocks
+                .get(index)
+                .map(|block| block.text.trim())
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned);
+        }
+
+        None
+    }
+
+    fn all_ocr_text(&self) -> Option<String> {
+        let result = self.ocr_result.as_ref()?;
+        let text = result.plain_text.trim();
+        (!text.is_empty()).then(|| text.to_owned())
+    }
+
+    fn copy_selected_ocr_text_or_image(&mut self) {
+        if self.selected_ocr_text().is_some() {
+            self.copy_selected_ocr_text();
+        } else {
+            self.copy_pin_image();
+        }
+    }
+
+    fn copy_selected_ocr_text(&mut self) {
+        let Some(text) = self.selected_ocr_text() else {
+            return;
+        };
+
+        self.copy_text_to_clipboard(text);
+    }
+
+    fn copy_all_ocr_text(&mut self) {
+        let Some(text) = self.all_ocr_text() else {
+            return;
+        };
+
+        self.copy_text_to_clipboard(text);
+    }
+
+    fn copy_text_to_clipboard(&mut self, text: String) {
+        match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text.clone())) {
+            Ok(()) => {
+                log::info!("pin OCR text copied chars={}", text.chars().count());
+                self.ocr_status = Some("Copied".to_owned());
+            }
+            Err(error) => {
+                let message = format!("{}: {error}", self.text.copy_failed);
+                log::error!("{message}");
+                self.ocr_status = Some(message);
+            }
+        }
+    }
+
+    fn copy_pin_image(&mut self) {
+        let Some(image) = self.load_pin_image_for_action() else {
+            return;
+        };
+
+        let rgba = image.to_rgba8();
+        let clipboard_image = arboard::ImageData {
+            width: rgba.width() as usize,
+            height: rgba.height() as usize,
+            bytes: Cow::Owned(rgba.into_raw()),
+        };
+        match arboard::Clipboard::new()
+            .and_then(|mut clipboard| clipboard.set_image(clipboard_image))
+        {
+            Ok(()) => {
+                log::info!("pin image copied");
+                self.ocr_status = Some("Copied".to_owned());
+            }
+            Err(error) => {
+                let message = format!("{}: {error}", self.text.copy_failed);
+                log::error!("{message}");
+                self.ocr_status = Some(message);
+            }
+        }
+    }
+
+    fn save_pin_image(&mut self) {
+        let Some(image) = self.load_pin_image_for_action() else {
+            return;
+        };
+
+        let default_name = capture_file_name();
+        let image_path = match platform_win32::prompt_save_png_path(&default_name) {
+            Ok(Some(path)) => path,
+            Ok(None) => {
+                log::info!("pin save path prompt canceled");
+                return;
+            }
+            Err(error) => {
+                let message = format!("{}: {error}", self.text.save_failed);
+                log::error!("{message}");
+                self.ocr_status = Some(message);
+                return;
+            }
+        };
+
+        if let Some(parent) = image_path.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                let message = format!("{}: {error}", self.text.save_failed);
+                log::error!("{message}");
+                self.ocr_status = Some(message);
+                return;
+            }
+        }
+
+        match image.save(&image_path) {
+            Ok(()) => {
+                log::info!("saved pin image to {}", image_path.display());
+                self.ocr_status = Some("Saved".to_owned());
+            }
+            Err(error) => {
+                let message = format!("{}: {error}", self.text.save_failed);
+                log::error!("{message}");
+                self.ocr_status = Some(message);
+            }
+        }
+    }
+
+    fn load_pin_image_for_action(&mut self) -> Option<DynamicImage> {
+        let Some(path) = &self.image_path else {
+            self.ocr_status = Some(self.text.missing_pin_image.to_owned());
+            return None;
+        };
+
+        match image::open(path) {
+            Ok(image) => Some(image),
+            Err(error) => {
+                let message = format!("{}: {error}", self.text.pin_load_failed);
+                log::error!("{message}");
+                self.ocr_status = Some(message);
+                None
             }
         }
     }
@@ -1983,6 +2215,7 @@ struct PinOcrRequest {
     provider: OcrProvider,
     language_hint: Option<String>,
     default_model_id: Option<String>,
+    models_registry: Option<PathBuf>,
     load_error_prefix: String,
 }
 
@@ -2018,7 +2251,7 @@ fn recognize_pin_image(request: PinOcrRequest) -> Result<OcrResult, String> {
 
     let mut engine = RoutedOcrEngine::default();
     if matches!(job.provider, OcrProvider::Local(_)) {
-        let registry = ModelRegistry::with_builtin_defaults();
+        let registry = load_model_registry(request.models_registry.as_deref());
         let model = job
             .model_id
             .as_deref()
@@ -2036,6 +2269,31 @@ fn recognize_pin_image(request: PinOcrRequest) -> Result<OcrResult, String> {
     engine
         .recognize(&job, &image_data)
         .map_err(|error| error.message)
+}
+
+fn load_model_registry(path: Option<&std::path::Path>) -> ModelRegistry {
+    let mut registry = ModelRegistry::with_builtin_defaults();
+    let Some(path) = path else {
+        return registry;
+    };
+
+    match std::fs::read_to_string(path) {
+        Ok(contents) => match serde_json::from_str::<Vec<shared_models::ModelManifest>>(&contents) {
+            Ok(models) => {
+                for model in models {
+                    registry.register(model);
+                }
+            }
+            Err(error) => {
+                log::error!("failed to parse OCR model registry {}: {error}", path.display());
+            }
+        },
+        Err(error) => {
+            log::warn!("OCR model registry not loaded from {}: {error}", path.display());
+        }
+    }
+
+    registry
 }
 
 fn parse_ocr_provider(value: &str) -> OcrProvider {
@@ -2073,6 +2331,10 @@ fn clamp_pin_window_size(size: Vec2) -> Vec2 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PinToolbarAction {
+    CopyImage,
+    CopySelectedText,
+    CopyAllText,
+    SaveImage,
     RunOcr,
     Translate,
     Close,
@@ -2118,16 +2380,27 @@ impl PinToolbarEdge {
 struct PinToolbarButton {
     rect: EguiRect,
     label: &'static str,
+    shortcut: Option<&'static str>,
     action: PinToolbarAction,
+    enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PinToolbarState {
+    text: OverlayText,
+    has_ocr_text: bool,
+    has_selected_ocr_text: bool,
 }
 
 fn current_viewport_rect(ctx: &Context) -> Option<EguiRect> {
     ctx.input(|input| input.viewport().inner_rect.or(input.viewport().outer_rect))
 }
 
-fn pin_toolbar_size(edge: PinToolbarEdge) -> Vec2 {
-    let long_side =
-        PIN_TOOLBAR_PADDING * 2.0 + PIN_TOOLBAR_BUTTON_SIZE * 3.0 + PIN_TOOLBAR_BUTTON_GAP * 2.0;
+fn pin_toolbar_size(edge: PinToolbarEdge, button_count: usize) -> Vec2 {
+    let count = button_count.max(1) as f32;
+    let long_side = PIN_TOOLBAR_PADDING * 2.0
+        + PIN_TOOLBAR_BUTTON_SIZE * count
+        + PIN_TOOLBAR_BUTTON_GAP * (count - 1.0);
     let short_side = PIN_TOOLBAR_PADDING * 2.0 + PIN_TOOLBAR_BUTTON_SIZE;
     if edge.is_horizontal() {
         Vec2::new(long_side, short_side)
@@ -2136,8 +2409,8 @@ fn pin_toolbar_size(edge: PinToolbarEdge) -> Vec2 {
     }
 }
 
-fn pin_toolbar_extent(edge: PinToolbarEdge) -> f32 {
-    let size = pin_toolbar_size(edge);
+fn pin_toolbar_extent(edge: PinToolbarEdge, button_count: usize) -> f32 {
+    let size = pin_toolbar_size(edge, button_count);
     if edge.is_horizontal() {
         size.y + PIN_TOOLBAR_OUTSIDE_GAP + PIN_TOOLBAR_MARGIN
     } else {
@@ -2148,7 +2421,7 @@ fn pin_toolbar_extent(edge: PinToolbarEdge) -> f32 {
 fn pin_window_size_for_image(image_size: Vec2, edge: Option<PinToolbarEdge>) -> Vec2 {
     let mut size = image_size;
     if let Some(edge) = edge {
-        let extent = pin_toolbar_extent(edge);
+        let extent = pin_toolbar_extent(edge, PIN_TOOLBAR_MAX_BUTTONS);
         if edge.is_horizontal() {
             size.y += extent;
         } else {
@@ -2163,10 +2436,10 @@ fn pin_image_rect(canvas: EguiRect, image_size: Vec2, edge: Option<PinToolbarEdg
     let min = match edge {
         Some(PinToolbarEdge::Top) => Pos2::new(
             canvas.min.x,
-            canvas.min.y + pin_toolbar_extent(PinToolbarEdge::Top),
+            canvas.min.y + pin_toolbar_extent(PinToolbarEdge::Top, PIN_TOOLBAR_MAX_BUTTONS),
         ),
         Some(PinToolbarEdge::Left) => Pos2::new(
-            canvas.min.x + pin_toolbar_extent(PinToolbarEdge::Left),
+            canvas.min.x + pin_toolbar_extent(PinToolbarEdge::Left, PIN_TOOLBAR_MAX_BUTTONS),
             canvas.min.y,
         ),
         _ => canvas.min,
@@ -2175,8 +2448,13 @@ fn pin_image_rect(canvas: EguiRect, image_size: Vec2, edge: Option<PinToolbarEdg
     EguiRect::from_min_size(min, image_size)
 }
 
-fn pin_toolbar_rect(canvas: EguiRect, image_rect: EguiRect, edge: PinToolbarEdge) -> EguiRect {
-    let size = pin_toolbar_size(edge);
+fn pin_toolbar_rect(
+    canvas: EguiRect,
+    image_rect: EguiRect,
+    edge: PinToolbarEdge,
+    state: PinToolbarState,
+) -> EguiRect {
+    let size = pin_toolbar_size(edge, pin_toolbar_button_count(state));
     let center = match edge {
         PinToolbarEdge::Top => Pos2::new(
             image_rect.center().x,
@@ -2206,7 +2484,15 @@ fn pin_toolbar_rect(canvas: EguiRect, image_rect: EguiRect, edge: PinToolbarEdge
     EguiRect::from_min_size(min, size)
 }
 
-fn pin_toolbar_buttons(toolbar: EguiRect, text: OverlayText) -> [PinToolbarButton; 3] {
+fn pin_toolbar_button_count(state: PinToolbarState) -> usize {
+    let mut count = 5;
+    if state.has_ocr_text {
+        count += 2;
+    }
+    count
+}
+
+fn pin_toolbar_buttons(toolbar: EguiRect, state: PinToolbarState) -> Vec<PinToolbarButton> {
     let horizontal = toolbar.width() >= toolbar.height();
     let first = toolbar.min + Vec2::splat(PIN_TOOLBAR_PADDING);
     let step = PIN_TOOLBAR_BUTTON_SIZE + PIN_TOOLBAR_BUTTON_GAP;
@@ -2217,37 +2503,104 @@ fn pin_toolbar_buttons(toolbar: EguiRect, text: OverlayText) -> [PinToolbarButto
             Pos2::new(first.x, first.y + step * index)
         }
     };
-    [
+    let text = state.text;
+    let mut buttons = vec![
         PinToolbarButton {
             rect: EguiRect::from_min_size(button_min(0.0), Vec2::splat(PIN_TOOLBAR_BUTTON_SIZE)),
-            label: text.ocr_action,
-            action: PinToolbarAction::RunOcr,
+            label: text.copy_image_action,
+            shortcut: Some("Ctrl+C"),
+            action: PinToolbarAction::CopyImage,
+            enabled: true,
         },
         PinToolbarButton {
             rect: EguiRect::from_min_size(button_min(1.0), Vec2::splat(PIN_TOOLBAR_BUTTON_SIZE)),
-            label: text.translate_action,
-            action: PinToolbarAction::Translate,
+            label: text.save_image_action,
+            shortcut: None,
+            action: PinToolbarAction::SaveImage,
+            enabled: true,
         },
         PinToolbarButton {
             rect: EguiRect::from_min_size(button_min(2.0), Vec2::splat(PIN_TOOLBAR_BUTTON_SIZE)),
-            label: text.close_action,
-            action: PinToolbarAction::Close,
+            label: if state.has_ocr_text {
+                text.rerun_ocr_action
+            } else {
+                text.ocr_action
+            },
+            shortcut: None,
+            action: PinToolbarAction::RunOcr,
+            enabled: true,
         },
-    ]
+        PinToolbarButton {
+            rect: EguiRect::from_min_size(button_min(3.0), Vec2::splat(PIN_TOOLBAR_BUTTON_SIZE)),
+            label: text.translate_action,
+            shortcut: None,
+            action: PinToolbarAction::Translate,
+            enabled: true,
+        },
+        PinToolbarButton {
+            rect: EguiRect::from_min_size(button_min(4.0), Vec2::splat(PIN_TOOLBAR_BUTTON_SIZE)),
+            label: text.close_action,
+            shortcut: Some("Esc"),
+            action: PinToolbarAction::Close,
+            enabled: true,
+        },
+    ];
+
+    if state.has_ocr_text {
+        buttons.insert(
+            2,
+            PinToolbarButton {
+                rect: EguiRect::from_min_size(
+                    button_min(2.0),
+                    Vec2::splat(PIN_TOOLBAR_BUTTON_SIZE),
+                ),
+                label: text.copy_selected_text_action,
+                shortcut: Some("Ctrl+C"),
+                action: PinToolbarAction::CopySelectedText,
+                enabled: state.has_selected_ocr_text,
+            },
+        );
+        buttons.insert(
+            3,
+            PinToolbarButton {
+                rect: EguiRect::from_min_size(
+                    button_min(3.0),
+                    Vec2::splat(PIN_TOOLBAR_BUTTON_SIZE),
+                ),
+                label: text.copy_all_text_action,
+                shortcut: Some("Ctrl+Shift+C"),
+                action: PinToolbarAction::CopyAllText,
+                enabled: true,
+            },
+        );
+        for (index, button) in buttons.iter_mut().enumerate() {
+            button.rect = EguiRect::from_min_size(
+                button_min(index as f32),
+                Vec2::splat(PIN_TOOLBAR_BUTTON_SIZE),
+            );
+        }
+    }
+
+    buttons
 }
 
 fn pin_toolbar_action_at(
     position: Pos2,
     toolbar: EguiRect,
-    text: OverlayText,
+    state: PinToolbarState,
 ) -> Option<PinToolbarAction> {
-    pin_toolbar_buttons(toolbar, text)
+    pin_toolbar_buttons(toolbar, state)
         .into_iter()
-        .find(|button| button.rect.contains(position))
+        .find(|button| button.enabled && button.rect.contains(position))
         .map(|button| button.action)
 }
 
-fn draw_pin_toolbar(painter: &Painter, canvas: EguiRect, toolbar: EguiRect, text: OverlayText) {
+fn draw_pin_toolbar(
+    painter: &Painter,
+    canvas: EguiRect,
+    toolbar: EguiRect,
+    state: PinToolbarState,
+) {
     let pointer = painter.ctx().input(|input| input.pointer.hover_pos());
     painter.rect_filled(toolbar, 0.0, Color32::from_black_alpha(222));
     painter.rect_stroke(
@@ -2257,9 +2610,9 @@ fn draw_pin_toolbar(painter: &Painter, canvas: EguiRect, toolbar: EguiRect, text
         StrokeKind::Outside,
     );
 
-    for button in pin_toolbar_buttons(toolbar, text) {
+    for button in pin_toolbar_buttons(toolbar, state) {
         let hovered = pointer.is_some_and(|position| button.rect.contains(position));
-        let fill = if hovered {
+        let fill = if hovered && button.enabled {
             Color32::from_white_alpha(36)
         } else {
             Color32::from_white_alpha(18)
@@ -2271,10 +2624,22 @@ fn draw_pin_toolbar(painter: &Painter, canvas: EguiRect, toolbar: EguiRect, text
             Stroke::new(1.0, Color32::from_white_alpha(42)),
             StrokeKind::Inside,
         );
-        draw_pin_toolbar_icon(painter, button.rect, button.action, Color32::WHITE);
+        let color = if button.enabled {
+            Color32::WHITE
+        } else {
+            Color32::from_white_alpha(92)
+        };
+        draw_pin_toolbar_icon(painter, button.rect, button.action, color);
 
         if hovered {
-            draw_pin_toolbar_tooltip(painter, canvas, button.rect, button.label);
+            draw_pin_toolbar_tooltip(
+                painter,
+                canvas,
+                button.rect,
+                button.label,
+                button.shortcut,
+                button.enabled,
+            );
         }
     }
 }
@@ -2286,10 +2651,86 @@ fn draw_pin_toolbar_icon(
     color: Color32,
 ) {
     match action {
+        PinToolbarAction::CopyImage => draw_copy_image_icon(painter, rect, color),
+        PinToolbarAction::CopySelectedText => draw_copy_text_icon(painter, rect, color),
+        PinToolbarAction::CopyAllText => draw_copy_all_text_icon(painter, rect, color),
+        PinToolbarAction::SaveImage => draw_save_icon(painter, rect, color),
         PinToolbarAction::RunOcr => draw_ocr_icon(painter, rect, color),
         PinToolbarAction::Translate => draw_translate_icon(painter, rect, color),
         PinToolbarAction::Close => draw_close_icon(painter, rect, color),
     }
+}
+
+fn draw_copy_image_icon(painter: &Painter, rect: EguiRect, color: Color32) {
+    let stroke = Stroke::new(1.5, color);
+    let back =
+        EguiRect::from_center_size(rect.center() + Vec2::new(-3.0, -3.0), Vec2::new(13.0, 11.0));
+    let front =
+        EguiRect::from_center_size(rect.center() + Vec2::new(3.0, 3.0), Vec2::new(13.0, 11.0));
+    painter.rect_stroke(back, CornerRadius::same(1), stroke, StrokeKind::Inside);
+    painter.rect_filled(front, CornerRadius::same(1), Color32::from_black_alpha(20));
+    painter.rect_stroke(front, CornerRadius::same(1), stroke, StrokeKind::Inside);
+    painter.line_segment(
+        [
+            Pos2::new(front.min.x + 2.0, front.max.y - 3.0),
+            Pos2::new(front.min.x + 5.0, front.center().y),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            Pos2::new(front.min.x + 5.0, front.center().y),
+            Pos2::new(front.max.x - 2.0, front.max.y - 3.0),
+        ],
+        stroke,
+    );
+}
+
+fn draw_copy_text_icon(painter: &Painter, rect: EguiRect, color: Color32) {
+    let stroke = Stroke::new(1.5, color);
+    let page = EguiRect::from_center_size(rect.center(), Vec2::new(16.0, 17.0));
+    painter.rect_stroke(page, CornerRadius::same(1), stroke, StrokeKind::Inside);
+    for offset in [5.0, 9.0, 13.0] {
+        painter.line_segment(
+            [
+                Pos2::new(page.min.x + 3.0, page.min.y + offset),
+                Pos2::new(page.max.x - 3.0, page.min.y + offset),
+            ],
+            stroke,
+        );
+    }
+}
+
+fn draw_copy_all_text_icon(painter: &Painter, rect: EguiRect, color: Color32) {
+    draw_copy_text_icon(painter, rect, color);
+    let stroke = Stroke::new(1.4, color);
+    let center = rect.center() + Vec2::new(6.0, -7.0);
+    painter.line_segment(
+        [center + Vec2::new(-3.0, 0.0), center + Vec2::new(3.0, 0.0)],
+        stroke,
+    );
+    painter.line_segment(
+        [center + Vec2::new(0.0, -3.0), center + Vec2::new(0.0, 3.0)],
+        stroke,
+    );
+}
+
+fn draw_save_icon(painter: &Painter, rect: EguiRect, color: Color32) {
+    let stroke = Stroke::new(1.6, color);
+    let body = EguiRect::from_center_size(rect.center(), Vec2::new(17.0, 17.0));
+    painter.rect_stroke(body, CornerRadius::same(1), stroke, StrokeKind::Inside);
+    painter.line_segment(
+        [
+            Pos2::new(body.min.x + 4.0, body.min.y + 4.0),
+            Pos2::new(body.max.x - 4.0, body.min.y + 4.0),
+        ],
+        stroke,
+    );
+    let tray = EguiRect::from_min_max(
+        Pos2::new(body.min.x + 4.0, body.max.y - 7.0),
+        Pos2::new(body.max.x - 4.0, body.max.y - 3.0),
+    );
+    painter.rect_stroke(tray, CornerRadius::same(1), stroke, StrokeKind::Inside);
 }
 
 fn draw_ocr_icon(painter: &Painter, rect: EguiRect, color: Color32) {
@@ -2360,11 +2801,26 @@ fn draw_close_icon(painter: &Painter, rect: EguiRect, color: Color32) {
     );
 }
 
-fn draw_pin_toolbar_tooltip(painter: &Painter, canvas: EguiRect, button: EguiRect, label: &str) {
+fn draw_pin_toolbar_tooltip(
+    painter: &Painter,
+    canvas: EguiRect,
+    button: EguiRect,
+    label: &str,
+    shortcut: Option<&str>,
+    enabled: bool,
+) {
+    let label = match shortcut {
+        Some(shortcut) => format!("{label}  {shortcut}"),
+        None => label.to_owned(),
+    };
     let galley = painter.layout_no_wrap(
-        label.to_owned(),
+        label,
         FontId::proportional(12.0),
-        Color32::from_white_alpha(235),
+        if enabled {
+            Color32::from_white_alpha(235)
+        } else {
+            Color32::from_white_alpha(150)
+        },
     );
     let size = galley.size() + Vec2::new(14.0, 8.0);
     let mut min = Pos2::new(
@@ -2395,25 +2851,68 @@ fn draw_text_overlay(
     image_rect: EguiRect,
     image_size: Size,
     overlay: &TextOverlay,
+    selected: bool,
 ) {
-    if overlay.text.trim().is_empty() {
+    let text = text_overlay_display_text(&overlay.text);
+    if text.is_empty() {
         return;
     }
 
-    let rect = image_bounds_to_screen(image_rect, image_size, overlay.bounds);
-    let text = overlay.text.trim();
+    let bounds_rect = text_overlay_bounds_rect(image_rect, image_size, overlay);
+    let font_size = text_overlay_font_size(bounds_rect);
+    let label_rect = text_overlay_label_rect(painter, image_rect, bounds_rect, &text, font_size);
+    let padding = Vec2::new(OCR_TEXT_OVERLAY_PADDING_X, OCR_TEXT_OVERLAY_PADDING_Y);
+    let galley = painter.layout(
+        text.to_string(),
+        FontId::proportional(font_size),
+        Color32::WHITE,
+        (label_rect.width() - padding.x * 2.0).max(1.0),
+    );
+
+    let fill = if selected {
+        Color32::from_rgba_premultiplied(33, 118, 255, 214)
+    } else {
+        Color32::from_black_alpha(196)
+    };
+    let stroke = if selected {
+        Stroke::new(1.5, Color32::from_rgb(165, 210, 255))
+    } else {
+        Stroke::new(1.0, Color32::from_white_alpha(56))
+    };
+
+    painter.rect_filled(label_rect, 0.0, fill);
+    painter.rect_stroke(label_rect, CornerRadius::ZERO, stroke, StrokeKind::Inside);
+    painter.galley(label_rect.min + padding, galley, Color32::WHITE);
+}
+
+fn ocr_block_interaction_rect(image_rect: EguiRect, image_size: Size, bounds: Rect) -> EguiRect {
+    image_bounds_to_screen(image_rect, image_size, bounds)
+        .expand2(Vec2::new(
+            OCR_TEXT_INTERACTION_PADDING_X,
+            OCR_TEXT_INTERACTION_PADDING_Y,
+        ))
+        .intersect(image_rect)
+}
+
+fn text_overlay_label_rect(
+    painter: &Painter,
+    image_rect: EguiRect,
+    bounds_rect: EguiRect,
+    text: &str,
+    font_size: f32,
+) -> EguiRect {
     let galley = painter.layout(
         text.to_owned(),
-        FontId::proportional(13.0),
+        FontId::proportional(font_size),
         Color32::WHITE,
-        rect.width().max(80.0),
+        bounds_rect.width().max(80.0),
     );
-    let padding = Vec2::new(7.0, 5.0);
+    let padding = Vec2::new(OCR_TEXT_OVERLAY_PADDING_X, OCR_TEXT_OVERLAY_PADDING_Y);
     let label_size = Vec2::new(
         (galley.size().x + padding.x * 2.0).min(image_rect.width().max(1.0)),
         galley.size().y + padding.y * 2.0,
     );
-    let mut label_min = rect.left_top();
+    let mut label_min = bounds_rect.left_top();
     label_min.x = label_min.x.clamp(
         image_rect.min.x,
         (image_rect.max.x - label_size.x).max(image_rect.min.x),
@@ -2422,16 +2921,76 @@ fn draw_text_overlay(
         image_rect.min.y,
         (image_rect.max.y - label_size.y).max(image_rect.min.y),
     );
-    let label_rect = EguiRect::from_min_size(label_min, label_size);
+    EguiRect::from_min_size(label_min, label_size)
+}
 
-    painter.rect_filled(label_rect, 0.0, Color32::from_black_alpha(196));
-    painter.rect_stroke(
-        label_rect,
-        CornerRadius::ZERO,
-        Stroke::new(1.0, Color32::from_white_alpha(56)),
-        StrokeKind::Inside,
-    );
-    painter.galley(label_rect.min + padding, galley, Color32::WHITE);
+fn text_overlay_display_text(text: &str) -> Cow<'_, str> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Cow::Borrowed(text);
+    }
+
+    let mut display_text = String::with_capacity(text.len());
+    let mut pending_whitespace = String::new();
+    let mut previous_compact = false;
+    let mut changed = false;
+
+    for character in text.chars() {
+        if character.is_whitespace() {
+            pending_whitespace.push(character);
+            continue;
+        }
+
+        let current_compact = is_compact_ocr_text_character(character);
+        if !pending_whitespace.is_empty() {
+            if previous_compact && current_compact {
+                changed = true;
+            } else {
+                display_text.push_str(&pending_whitespace);
+            }
+            pending_whitespace.clear();
+        }
+
+        display_text.push(character);
+        previous_compact = current_compact;
+    }
+
+    if changed {
+        Cow::Owned(display_text)
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+fn is_compact_ocr_text_character(character: char) -> bool {
+    matches!(
+        character,
+        '\u{2E80}'..='\u{2EFF}'
+            | '\u{3000}'..='\u{303F}'
+            | '\u{3040}'..='\u{30FF}'
+            | '\u{31F0}'..='\u{31FF}'
+            | '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{AC00}'..='\u{D7AF}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{FE10}'..='\u{FE1F}'
+            | '\u{FE30}'..='\u{FE4F}'
+            | '\u{FF00}'..='\u{FFEF}'
+            | '\u{20000}'..='\u{2FA1F}'
+    )
+}
+
+fn text_overlay_font_size(bounds_rect: EguiRect) -> f32 {
+    (bounds_rect.height() * OCR_TEXT_FONT_HEIGHT_RATIO)
+        .clamp(OCR_TEXT_FONT_MIN_SIZE, OCR_TEXT_FONT_MAX_SIZE)
+}
+
+fn text_overlay_bounds_rect(
+    image_rect: EguiRect,
+    image_size: Size,
+    overlay: &TextOverlay,
+) -> EguiRect {
+    image_bounds_to_screen(image_rect, image_size, overlay.bounds)
 }
 
 fn image_bounds_to_screen(image_rect: EguiRect, image_size: Size, bounds: Rect) -> EguiRect {

@@ -1,10 +1,24 @@
-import { AppSettings, ModelSummary } from "@/lib/tauri";
+import {
+  AppSettings,
+  AppStatus,
+  ModelDownloadStatus,
+  ModelStorageInfo,
+  ModelSummary,
+} from "@/lib/tauri";
 import { localeOptions, Translator } from "@/i18n";
-import { Loader2, Upload } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  Download,
+  FolderOpen,
+  Loader2,
+  Square,
+  Upload,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   completionActions,
-  ocrModes,
   ocrProviders,
   targetLanguages,
   translationProviders,
@@ -32,11 +46,57 @@ interface SettingsPanelProps {
   ) => void;
   modelManifestPath: string;
   onModelManifestPathChange: (value: string) => void;
+  modelStorageInfo: ModelStorageInfo | null;
+  modelStoragePath: string;
+  onModelStoragePathChange: (value: string) => void;
   onImportModel: () => void;
+  onDownloadOcrModel: (modelId: string) => void;
+  onCancelModelDownload: () => void;
+  onChooseModelStorageDir: () => void;
+  onApplyModelStorageDir: () => void;
+  onOpenModelStorageDir: () => void;
+  onOpenModels: () => void;
   importingModel: boolean;
+  managingModelStorage: boolean;
+  downloadingOcrModel: boolean;
+  modelDownloadStatus: ModelDownloadStatus | null;
   models: ModelSummary[];
+  status: AppStatus;
   t: Translator;
 }
+
+const builtinOcrModelPackages = [
+  {
+    id: "ppocr-v5-mobile-mnn",
+    name: "PP-OCRv5 Mobile MNN",
+    profile: "标准",
+    detail: "默认推荐，适合常规截图 OCR。",
+  },
+  {
+    id: "ppocr-v5-mobile-fp16-mnn",
+    name: "PP-OCRv5 Mobile FP16 MNN",
+    profile: "轻量",
+    detail: "低配机器优先，体积和运行压力更小。",
+  },
+  {
+    id: "ppocr-v4-mobile-mnn",
+    name: "PP-OCRv4 Mobile MNN",
+    profile: "兼容",
+    detail: "用于 v5 模型异常或旧环境回退。",
+  },
+];
+
+const localOcrProviders = new Set(["local-mnn"]);
+const apiOcrProviders = new Set([
+  "api-openai",
+  "api-azure",
+  "api-google",
+  "api-baidu",
+  "api-tencent",
+  "api-custom",
+]);
+const recommendedOcrModelId = "ppocr-v5-mobile-mnn";
+const showModelRegistryDetails = import.meta.env.DEV;
 
 // Each branch mirrors one navigation tab, keeping field wiring close to the settings shape.
 export function SettingsPanel({
@@ -45,9 +105,22 @@ export function SettingsPanel({
   updateSettings,
   modelManifestPath,
   onModelManifestPathChange,
+  modelStorageInfo,
+  modelStoragePath,
+  onModelStoragePathChange,
   onImportModel,
+  onDownloadOcrModel,
+  onCancelModelDownload,
+  onChooseModelStorageDir,
+  onApplyModelStorageDir,
+  onOpenModelStorageDir,
+  onOpenModels,
   importingModel,
+  managingModelStorage,
+  downloadingOcrModel,
+  modelDownloadStatus,
   models,
+  status,
   t,
 }: SettingsPanelProps) {
   if (activeView === "interface") {
@@ -218,23 +291,48 @@ export function SettingsPanel({
   }
 
   if (activeView === "ocr") {
-    const ocrModelOptions = [
-      { value: "auto", label: t("model.auto") },
-      ...models
-        .filter((model) => model.domain === "ocr")
-        .map((model) => ({
-          value: model.id,
-          label: `${model.name} (${model.backend}, ${model.availability})`,
-        })),
-    ];
-    const defaultProfileId =
-      settings.ocr.defaultProviderProfileId || "custom-http";
-    const customProfile =
+    const localOcrRuntimeEnabled =
+      status.localOcrRuntimeStatus === "local-ocr-rs-enabled";
+    const ocrModels = models.filter((model) => model.domain === "ocr");
+    const readyLocalOcrModels = models.filter(
+      (model) =>
+        model.domain === "ocr" &&
+        model.source === "local-path" &&
+        model.availability === "ready",
+    );
+    const hasReadyLocalOcrModel = readyLocalOcrModels.length > 0;
+    const usingLocalOcr = localOcrProviders.has(settings.ocr.provider);
+    const usingApiOcr = apiOcrProviders.has(settings.ocr.provider);
+    const autoModelId =
+      readyLocalOcrModels.find((model) => model.id === recommendedOcrModelId)?.id ??
+      readyLocalOcrModels[0]?.id ??
+      recommendedOcrModelId;
+    const selectedModelId = settings.ocr.defaultModelId || autoModelId;
+    const selectedModel = ocrModels.find((model) => model.id === selectedModelId);
+    const manualModelSelected = Boolean(settings.ocr.defaultModelId);
+    const providerRequiredBackend =
+      settings.ocr.provider === "local-mnn" ? "mnn" : null;
+    const modelMatchesProvider =
+      !usingLocalOcr ||
+      !selectedModel ||
+      !providerRequiredBackend ||
+      selectedModel.backend === providerRequiredBackend;
+    const selectedModelReady =
+      selectedModelId.length > 0 &&
+      readyLocalOcrModels.some((model) => model.id === selectedModelId);
+    const autoRunDisabled =
+      usingLocalOcr &&
+      (!localOcrRuntimeEnabled || !selectedModelReady || !modelMatchesProvider);
+    const autoRunChecked =
+      settings.ocr.autoRunAfterCapture && !autoRunDisabled;
+    const currentProviderProfileId =
+      settings.ocr.defaultProviderProfileId || `${settings.ocr.provider}-default`;
+    const apiProfile =
       settings.ocr.providerProfiles.find(
-        (profile) => profile.id === defaultProfileId,
+        (profile) => profile.id === currentProviderProfileId,
       ) ?? {
-        id: defaultProfileId,
-        provider: "api-custom",
+        id: currentProviderProfileId,
+        provider: settings.ocr.provider,
         endpoint: "",
         model: "",
         languageHint: "",
@@ -242,38 +340,69 @@ export function SettingsPanel({
         retryLimit: 0,
         privacyNoticeAcknowledged: false,
       };
+    const apiReady = !usingApiOcr
+      ? true
+      : settings.ocr.provider === "api-custom"
+        ? Boolean(apiProfile.endpoint.trim()) &&
+          apiProfile.privacyNoticeAcknowledged
+        : apiProfile.privacyNoticeAcknowledged;
+    const providerOptions = localizedOptions(ocrProviders, t);
+    const ocrModelOptions = [
+      {
+        value: "auto",
+        label: `${t("model.auto")} (${autoModelId})`,
+      },
+      ...ocrModels.map((model) => ({
+        value: model.id,
+        label: `${model.name} (${model.backend}, ${model.availability})`,
+      })),
+    ];
     const updateCustomProfile = (
-      values: Partial<typeof customProfile>,
+      values: Partial<typeof apiProfile>,
     ) => {
       const nextProfile = {
-        ...customProfile,
+        ...apiProfile,
         ...values,
-        id: values.id ?? customProfile.id,
-        provider: "api-custom",
+        id: values.id ?? apiProfile.id,
+        provider: settings.ocr.provider,
       };
       const others = settings.ocr.providerProfiles.filter(
-        (profile) => profile.id !== customProfile.id && profile.id !== nextProfile.id,
+        (profile) => profile.id !== apiProfile.id && profile.id !== nextProfile.id,
       );
       updateSettings("ocr", {
         providerProfiles: [...others, nextProfile],
         defaultProviderProfileId: nextProfile.id,
       });
     };
+    const handleProviderChange = (provider: string) => {
+      updateSettings("ocr", {
+        provider,
+        defaultProviderProfileId: apiOcrProviders.has(provider)
+          ? `${provider}-default`
+          : settings.ocr.defaultProviderProfileId,
+      });
+    };
 
     return (
       <FieldGrid>
         <SelectField
-          label={t("field.ocrMode")}
-          value={settings.ocr.mode}
-          options={localizedOptions(ocrModes, t)}
-          onValueChange={(mode) => updateSettings("ocr", { mode })}
-        />
-        <SelectField
           label={t("field.provider")}
           value={settings.ocr.provider}
-          options={localizedOptions(ocrProviders, t)}
-          onValueChange={(provider) => updateSettings("ocr", { provider })}
+          options={providerOptions}
+          onValueChange={handleProviderChange}
         />
+        {usingLocalOcr ? (
+          <SelectField
+            label={t("field.defaultOcrModel")}
+            value={settings.ocr.defaultModelId || "auto"}
+            options={ocrModelOptions}
+            onValueChange={(value) => {
+              updateSettings("ocr", {
+                defaultModelId: value === "auto" ? "" : value,
+              });
+            }}
+          />
+        ) : null}
         <TextField
           label={t("field.languageHint")}
           value={settings.ocr.languageHint}
@@ -284,73 +413,148 @@ export function SettingsPanel({
         />
         <SwitchField
           label={t("field.runOcrAfterCapture")}
-          checked={settings.ocr.autoRunAfterCapture}
+          checked={autoRunChecked}
+          disabled={autoRunDisabled}
           onCheckedChange={(autoRunAfterCapture) =>
             updateSettings("ocr", { autoRunAfterCapture })
           }
         />
-        <SelectField
-          label={t("field.defaultOcrModel")}
-          value={settings.ocr.defaultModelId || "auto"}
-          options={ocrModelOptions}
-          onValueChange={(value) => {
-            updateSettings("ocr", {
-              defaultModelId: value === "auto" ? "" : value,
-            });
-          }}
-        />
-        <TextField
-          label={t("field.ocrProfileId")}
-          value={customProfile.id}
-          placeholder="custom-http"
-          onValueChange={(id) => updateCustomProfile({ id })}
-        />
-        <TextField
-          label={t("field.customHttpEndpoint")}
-          value={customProfile.endpoint}
-          placeholder="http://127.0.0.1:8080/ocr"
-          onValueChange={(endpoint) => updateCustomProfile({ endpoint })}
-        />
-        <NumberField
-          label={t("field.ocrTimeout")}
-          min={1000}
-          max={120000}
-          step={1000}
-          value={customProfile.timeoutMs}
-          onValueChange={(timeoutMs) => updateCustomProfile({ timeoutMs })}
-        />
-        <SwitchField
-          label={t("field.externalOcrPrivacy")}
-          checked={customProfile.privacyNoticeAcknowledged}
-          onCheckedChange={(privacyNoticeAcknowledged) =>
-            updateCustomProfile({ privacyNoticeAcknowledged })
+        <ModelTile
+          label="OCR provider status"
+          value={
+            settings.ocr.provider === "disabled"
+              ? "OCR disabled"
+              : usingApiOcr
+                ? apiReady
+                  ? "API profile ready"
+                  : "API profile missing"
+                : usingLocalOcr
+                  ? selectedModelReady &&
+                    localOcrRuntimeEnabled &&
+                    modelMatchesProvider
+                    ? "Local OCR ready"
+                    : "Local OCR needs setup"
+                  : "System OCR selected"
+          }
+          configuredLabel={
+            usingApiOcr
+              ? apiReady
+                ? t("model.configured")
+                : "configure API profile"
+              : usingLocalOcr
+                ? selectedModelReady && modelMatchesProvider
+                  ? t("model.configured")
+                  : !modelMatchesProvider
+                    ? "model/backend mismatch"
+                    : "download model first"
+                : t("model.configured")
           }
         />
+        {usingLocalOcr ? (
+          <>
+            <ModelTile
+              label="Local OCR runtime"
+              value={status.localOcrRuntimeStatus}
+              configuredLabel={
+                localOcrRuntimeEnabled
+                  ? "runtime enabled"
+                  : "local_ocr_runtime_disabled"
+              }
+            />
+            <ModelTile
+              label="Local OCR model"
+              value={
+                selectedModel
+                  ? `${selectedModel.name} / ${selectedModel.availability}`
+                  : hasReadyLocalOcrModel
+                    ? readyLocalOcrModels.map((model) => model.id).join(", ")
+                    : "缺少本地 OCR 模型"
+              }
+              configuredLabel={
+                selectedModelReady && modelMatchesProvider
+                  ? manualModelSelected
+                    ? "manual model ready"
+                    : "auto model ready"
+                  : !modelMatchesProvider
+                    ? "provider backend mismatch"
+                    : "go to Models to download or import"
+              }
+            />
+            <Button
+              type="button"
+              variant="outline"
+              className="min-h-[62px] min-w-0 justify-center"
+              onClick={onOpenModels}
+            >
+              <Download className="size-4" />
+              <span className="truncate">
+                {selectedModelReady ? "管理 OCR 模型" : "去模型页下载"}
+              </span>
+            </Button>
+          </>
+        ) : null}
+        {usingApiOcr ? (
+          <>
+            <TextField
+              label={t("field.ocrProfileId")}
+              value={apiProfile.id}
+              placeholder={`${settings.ocr.provider}-default`}
+              onValueChange={(id) => updateCustomProfile({ id })}
+            />
+            <TextField
+              label={t("field.customHttpEndpoint")}
+              value={apiProfile.endpoint}
+              placeholder={
+                settings.ocr.provider === "api-custom"
+                  ? "http://127.0.0.1:8080/ocr"
+                  : "optional endpoint override"
+              }
+              onValueChange={(endpoint) => updateCustomProfile({ endpoint })}
+            />
+            <TextField
+              label="OCR API model"
+              value={apiProfile.model}
+              placeholder={t("placeholder.auto")}
+              onValueChange={(model) => updateCustomProfile({ model })}
+            />
+            <NumberField
+              label={t("field.ocrTimeout")}
+              min={1000}
+              max={120000}
+              step={1000}
+              value={apiProfile.timeoutMs}
+              onValueChange={(timeoutMs) => updateCustomProfile({ timeoutMs })}
+            />
+            <SwitchField
+              label={t("field.externalOcrPrivacy")}
+              checked={apiProfile.privacyNoticeAcknowledged}
+              onCheckedChange={(privacyNoticeAcknowledged) =>
+                updateCustomProfile({ privacyNoticeAcknowledged })
+              }
+            />
+          </>
+        ) : null}
         <ModelTile
           label={t("model.ocrDefault")}
-          value="ppocr-v5-mobile-mnn"
-          configuredLabel={t("model.configured")}
+          value={
+            usingApiOcr
+              ? apiProfile.model || "api profile default"
+              : usingLocalOcr
+                ? selectedModelId || "auto"
+                : settings.ocr.provider
+          }
+          configuredLabel={
+            usingApiOcr
+              ? apiReady
+                ? t("model.configured")
+                : "missing API profile"
+              : usingLocalOcr
+                ? selectedModelReady && modelMatchesProvider
+                  ? t("model.configured")
+                  : "missing local files"
+                : t("model.configured")
+          }
         />
-        <TextField
-          label={t("field.modelManifestPath")}
-          value={modelManifestPath}
-          placeholder="D:\\models\\ppocr-v5-mobile-mnn\\manifest.toml"
-          onValueChange={onModelManifestPathChange}
-        />
-        <Button
-          type="button"
-          variant="outline"
-          className="min-h-[62px] min-w-0 justify-center"
-          disabled={!modelManifestPath.trim() || importingModel}
-          onClick={onImportModel}
-        >
-          {importingModel ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <Upload className="size-4" />
-          )}
-          <span className="truncate">{t("button.importModel")}</span>
-        </Button>
       </FieldGrid>
     );
   }
@@ -391,17 +595,81 @@ export function SettingsPanel({
   }
 
   if (activeView === "models") {
+    const downloadRunning = Boolean(modelDownloadStatus?.running);
+
     return (
       <FieldGrid>
-        {models.map((model) => (
-          <ModelTile
-            key={model.id}
-            label={model.domain}
-            value={`${model.name} / ${model.id}`}
-            configuredLabel={`${model.backend} / ${model.source} / ${model.availability}${model.packageSource ? ` / ${model.packageSource}` : ""}`}
-          />
-        ))}
-        {models.length === 0 ? (
+        <ModelStorageTile
+          info={modelStorageInfo}
+          path={modelStoragePath}
+          busy={managingModelStorage}
+          downloadRunning={downloadRunning}
+          onPathChange={onModelStoragePathChange}
+          onChoose={onChooseModelStorageDir}
+          onApply={onApplyModelStorageDir}
+          onOpen={onOpenModelStorageDir}
+        />
+        {builtinOcrModelPackages.map((modelPackage) => {
+          const model = models.find((item) => item.id === modelPackage.id);
+          const ready = model?.availability === "ready";
+          const runningThisModel =
+            downloadRunning && modelDownloadStatus?.modelId === modelPackage.id;
+
+          return (
+            <DownloadableModelTile
+              key={modelPackage.id}
+              title={modelPackage.name}
+              profile={modelPackage.profile}
+              detail={modelPackage.detail}
+              status={
+                ready
+                  ? "ready"
+                  : model?.availability ?? "not-downloaded"
+              }
+              source={model?.packageSource ?? "ocr-rs PaddleOCR MNN model package"}
+              path={model?.path}
+              disabled={ready || downloadRunning || downloadingOcrModel}
+              running={runningThisModel}
+              onDownload={() => onDownloadOcrModel(modelPackage.id)}
+            />
+          );
+        })}
+        <ModelDownloadTile
+          status={modelDownloadStatus}
+          runtimeEnabled={status.localOcrRuntimeStatus === "local-ocr-rs-enabled"}
+          onCancel={onCancelModelDownload}
+        />
+        <TextField
+          label={t("field.modelManifestPath")}
+          value={modelManifestPath}
+          placeholder="D:\\models\\ppocr-v5-mobile-mnn\\manifest.toml"
+          onValueChange={onModelManifestPathChange}
+        />
+        <Button
+          type="button"
+          variant="outline"
+          className="min-h-[62px] min-w-0 justify-center"
+          disabled={!modelManifestPath.trim() || importingModel}
+          onClick={onImportModel}
+        >
+          {importingModel ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <Upload className="size-4" />
+          )}
+          <span className="truncate">{t("button.importModel")}</span>
+        </Button>
+        {showModelRegistryDetails
+          ? models.map((model) => (
+              <ModelTile
+                key={model.id}
+                label={model.domain}
+                value={`${model.name} / ${model.id}`}
+                configuredLabel={`${model.backend} / ${model.source} / ${model.availability}${model.packageSource ? ` / ${model.packageSource}` : ""}`}
+              />
+            ))
+          : null}
+        {showModelRegistryDetails && models.length === 0 ? (
           <ModelTile
             label={t("view.models")}
             value={t("events.none")}
@@ -472,4 +740,242 @@ export function SettingsPanel({
   }
 
   return null;
+}
+
+function ModelStorageTile({
+  info,
+  path,
+  busy,
+  downloadRunning,
+  onPathChange,
+  onChoose,
+  onApply,
+  onOpen,
+}: {
+  info: ModelStorageInfo | null;
+  path: string;
+  busy: boolean;
+  downloadRunning: boolean;
+  onPathChange: (value: string) => void;
+  onChoose: () => void;
+  onApply: () => void;
+  onOpen: () => void;
+}) {
+  const currentPath = info?.currentOcrModelsDir ?? path;
+  const defaultPath = info?.defaultOcrModelsDir ?? "";
+  const applyDisabled =
+    busy || downloadRunning || !path.trim() || path.trim() === currentPath;
+
+  return (
+    <div className="min-w-0 rounded-md border bg-background/70 p-4 md:col-span-2">
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="break-words text-xs font-medium text-muted-foreground">
+            模型默认下载位置
+          </p>
+          <p className="mt-2 break-all text-sm font-semibold">
+            {currentPath || "加载中..."}
+          </p>
+          <p className="mt-2 break-all text-xs text-muted-foreground">
+            默认位置：{defaultPath || "加载中..."}
+          </p>
+        </div>
+        <span className="rounded-sm bg-muted px-2 py-1 text-xs text-muted-foreground">
+          {info?.usingDefault ? "默认" : "自定义"}
+        </span>
+      </div>
+      <div className="mt-4 flex min-w-0 flex-col gap-2 lg:flex-row">
+        <Input
+          value={path}
+          placeholder={defaultPath}
+          onChange={(event) => onPathChange(event.target.value)}
+        />
+        <div className="flex shrink-0 flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            className="min-w-0"
+            disabled={busy || downloadRunning}
+            onClick={onChoose}
+          >
+            {busy ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <FolderOpen className="size-4" />
+            )}
+            <span className="truncate">选择位置</span>
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            className="min-w-0"
+            disabled={applyDisabled}
+            onClick={onApply}
+          >
+            <span className="truncate">应用</span>
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            className="min-w-0"
+            disabled={busy || !currentPath}
+            onClick={onOpen}
+          >
+            <FolderOpen className="size-4" />
+            <span className="truncate">打开位置</span>
+          </Button>
+        </div>
+      </div>
+      <p className="mt-3 break-words text-xs text-muted-foreground">
+        更改位置时，已下载的 OCR 模型会迁移到新目录；下载进行中不能修改。
+      </p>
+    </div>
+  );
+}
+
+function ModelDownloadTile({
+  status,
+  runtimeEnabled,
+  onCancel,
+}: {
+  status: ModelDownloadStatus | null;
+  runtimeEnabled: boolean;
+  onCancel: () => void;
+}) {
+  const downloaded = formatBytes(status?.downloadedBytes ?? 0);
+  const total = status?.totalBytes ? formatBytes(status.totalBytes) : "unknown";
+  const percent =
+    typeof status?.percent === "number" ? `${status.percent.toFixed(1)}%` : "";
+  const filePosition =
+    status && status.fileCount > 0
+      ? `${Math.min(status.fileIndex + 1, status.fileCount)}/${status.fileCount}`
+      : "";
+
+  return (
+    <div className="min-w-0 rounded-md border bg-background/70 p-4">
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="break-words text-xs font-medium text-muted-foreground">
+            模型下载
+          </p>
+          <p className="mt-2 break-all text-sm font-semibold">
+            {status?.running
+              ? `${filePosition} ${status.fileName || status.role}`
+              : status?.error
+                ? "下载失败，可重试"
+                : status?.result
+                  ? "下载完成"
+                  : "可直接下载内置来源模型"}
+          </p>
+        </div>
+        {status?.running ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            title="取消下载"
+            onClick={onCancel}
+          >
+            <Square className="size-4" />
+          </Button>
+        ) : null}
+      </div>
+      <div className="mt-4 h-2 overflow-hidden rounded-sm bg-muted">
+        <div
+          className="h-full bg-primary transition-all"
+          style={{ width: `${Math.max(0, Math.min(status?.percent ?? 0, 100))}%` }}
+        />
+      </div>
+      <p className="mt-3 break-words text-xs text-muted-foreground">
+        {status?.running
+          ? `${downloaded} / ${total}${percent ? ` · ${percent}` : ""}`
+          : runtimeEnabled
+            ? "下载成功后会自动注册并设为默认 OCR 模型。"
+            : "当前 runtime 未启用；仍可下载模型，但需使用 local-ocr-rs 构建才能本地识别。"}
+      </p>
+      {status?.error ? (
+        <p className="mt-2 break-words text-xs text-destructive">{status.error}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function DownloadableModelTile({
+  title,
+  profile,
+  detail,
+  status,
+  source,
+  path,
+  disabled,
+  running,
+  onDownload,
+}: {
+  title: string;
+  profile: string;
+  detail: string;
+  status: string;
+  source: string;
+  path?: string;
+  disabled: boolean;
+  running: boolean;
+  onDownload: () => void;
+}) {
+  const ready = status === "ready";
+
+  return (
+    <div className="min-w-0 rounded-md border bg-background/70 p-4">
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="break-words text-xs font-medium text-muted-foreground">
+            OCR {profile}模型
+          </p>
+          <p className="mt-2 break-words text-sm font-semibold">{title}</p>
+          <p className="mt-2 break-words text-xs text-muted-foreground">{detail}</p>
+        </div>
+        {ready ? (
+          <CheckCircle2 className="size-4 shrink-0 text-emerald-600" />
+        ) : (
+          <AlertCircle className="size-4 shrink-0 text-muted-foreground" />
+        )}
+      </div>
+      <div className="mt-4 flex min-w-0 flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          className="min-w-0"
+          disabled={disabled}
+          onClick={onDownload}
+        >
+          {running ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <Download className="size-4" />
+          )}
+          <span className="truncate">{ready ? "已就绪" : "下载"}</span>
+        </Button>
+        <span className="rounded-sm bg-muted px-2 py-1 text-xs text-muted-foreground">
+          {status}
+        </span>
+      </div>
+      <p className="mt-3 break-words text-xs text-muted-foreground">{source}</p>
+      {path ? (
+        <p className="mt-2 break-all text-xs text-muted-foreground">{path}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }

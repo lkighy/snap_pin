@@ -17,6 +17,7 @@ use tauri::{AppHandle, Manager};
 
 use super::overlay_launch::overlay_launch;
 use super::snapshot::{SnapshotCapture, capture_snapshot};
+use crate::settings::models;
 use crate::shell_state::ShellState;
 
 const OVERLAY_CONTROL_PORT: u16 = 47232;
@@ -71,8 +72,12 @@ pub fn launch_capture_overlay_for_settings(
         thread::sleep(Duration::from_millis(settings.capture.capture_delay_ms));
     }
 
+    let model_registry_path = models::models_path(app)
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned());
     let snapshot = capture_snapshot(settings.capture.include_cursor)?;
-    let command = OverlayCaptureCommand::from_settings(settings, &snapshot);
+    let command = OverlayCaptureCommand::from_settings(settings, &snapshot)
+        .with_model_registry_path(model_registry_path.clone());
     let managed = app.state::<Mutex<CaptureOverlayRuntime>>();
     let mut runtime = managed
         .lock()
@@ -185,7 +190,10 @@ fn ensure_overlay_resident_locked(
 
     if runtime.process.is_none() {
         let launch = overlay_launch(app)?;
-        let args = resident_overlay_args(settings);
+        let model_registry_path = models::models_path(app)
+            .ok()
+            .map(|path| path.to_string_lossy().into_owned());
+        let args = resident_overlay_args(settings, model_registry_path.as_deref());
         log::info!("starting resident overlay via {}", launch.description());
         let mut command = launch.command(args);
         command
@@ -298,7 +306,7 @@ fn control_addr() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], OVERLAY_CONTROL_PORT))
 }
 
-fn resident_overlay_args(settings: &Settings) -> Vec<String> {
+fn resident_overlay_args(settings: &Settings, model_registry_path: Option<&str>) -> Vec<String> {
     vec![
         "--capture".to_owned(),
         "--resident".to_owned(),
@@ -334,6 +342,8 @@ fn resident_overlay_args(settings: &Settings) -> Vec<String> {
         settings.ocr.language_hint.clone().unwrap_or_default(),
         "--ocr-default-model-id".to_owned(),
         settings.ocr.default_model_id.clone().unwrap_or_default(),
+        "--ocr-models-registry".to_owned(),
+        model_registry_path.unwrap_or("").to_owned(),
     ]
 }
 
@@ -358,6 +368,7 @@ struct OverlayCaptureCommand {
     ocr_provider: String,
     ocr_language_hint: Option<String>,
     ocr_default_model_id: Option<String>,
+    ocr_models_registry: Option<String>,
 }
 
 impl OverlayCaptureCommand {
@@ -393,7 +404,13 @@ impl OverlayCaptureCommand {
             ocr_provider: ocr_provider_name(&settings.ocr.provider),
             ocr_language_hint: settings.ocr.language_hint.clone(),
             ocr_default_model_id: settings.ocr.default_model_id.clone(),
+            ocr_models_registry: None,
         }
+    }
+
+    fn with_model_registry_path(mut self, path: Option<String>) -> Self {
+        self.ocr_models_registry = path;
+        self
     }
 }
 

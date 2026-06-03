@@ -4,6 +4,7 @@ export interface AppStatus {
   bootSummary: string;
   modelSummary: string;
   historySummary: string;
+  localOcrRuntimeStatus: string;
 }
 
 export interface InterfaceSettings {
@@ -96,6 +97,7 @@ export interface ModelImportResponse {
   events: string[];
   modelSummary: string;
   models: ModelSummary[];
+  settings: AppSettings;
 }
 
 export interface ModelSummary {
@@ -109,6 +111,26 @@ export interface ModelSummary {
   packageSource?: string;
 }
 
+export interface ModelDownloadStatus {
+  running: boolean;
+  modelId: string;
+  role: string;
+  fileName: string;
+  fileIndex: number;
+  fileCount: number;
+  downloadedBytes: number;
+  totalBytes?: number;
+  percent?: number;
+  error?: string;
+  result?: ModelImportResponse;
+}
+
+export interface ModelStorageInfo {
+  defaultOcrModelsDir: string;
+  currentOcrModelsDir: string;
+  usingDefault: boolean;
+}
+
 export function getAppStatus() {
   return invoke<AppStatus>("app_status");
 }
@@ -119,6 +141,10 @@ export function getSettings() {
 
 export function listModels() {
   return invoke<ModelSummary[]>("list_models");
+}
+
+export function getModelStorageInfo() {
+  return invoke<ModelStorageInfo>("model_storage_info");
 }
 
 export function saveSettings(settings: AppSettings) {
@@ -139,4 +165,32 @@ export function drainEvents() {
 
 export function importModel(manifestPath: string) {
   return invoke<ModelImportResponse>("import_model", { manifestPath });
+}
+
+export function downloadBuiltinOcrModel(modelId: string) {
+  return invoke<ModelImportResponse>("download_builtin_ocr_model", { modelId });
+}
+
+export function startBuiltinOcrModelDownload(modelId: string) {
+  return invoke<ModelDownloadStatus>("start_builtin_ocr_model_download", { modelId });
+}
+
+export function getModelDownloadStatus() {
+  return invoke<ModelDownloadStatus | null>("model_download_status");
+}
+
+export function cancelModelDownload() {
+  return invoke<ModelDownloadStatus | null>("cancel_model_download");
+}
+
+export function chooseOcrModelStorageDir() {
+  return invoke<ModelStorageInfo | null>("choose_ocr_model_storage_dir");
+}
+
+export function setOcrModelStorageDir(path: string) {
+  return invoke<ModelStorageInfo>("set_ocr_model_storage_dir", { path });
+}
+
+export function openOcrModelStorageDir() {
+  return invoke<void>("open_ocr_model_storage_dir");
 }
