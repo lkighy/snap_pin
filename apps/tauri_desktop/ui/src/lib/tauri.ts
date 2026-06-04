@@ -34,8 +34,21 @@ export interface PinSettings {
   alwaysOnTop: boolean;
   rememberPosition: boolean;
   zoomStep: number;
+  minWidth: number;
+  minHeight: number;
   showOcrText: boolean;
   showTranslationText: boolean;
+  ocrText: OcrTextOverlaySettings;
+}
+
+export interface OcrTextOverlaySettings {
+  fontHeightRatio: number;
+  minFontSize: number;
+  maxFontSize: number;
+  paddingX: number;
+  paddingY: number;
+  interactionPaddingX: number;
+  interactionPaddingY: number;
 }
 
 export interface OcrSettings {

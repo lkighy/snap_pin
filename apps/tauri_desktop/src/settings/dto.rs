@@ -59,8 +59,81 @@ pub struct PinSettingsDto {
     pub always_on_top: bool,
     pub remember_position: bool,
     pub zoom_step: f32,
+    #[serde(default = "default_pin_min_width")]
+    pub min_width: f32,
+    #[serde(default = "default_pin_min_height")]
+    pub min_height: f32,
     pub show_ocr_text: bool,
     pub show_translation_text: bool,
+    #[serde(default = "default_ocr_text_overlay_settings")]
+    pub ocr_text: OcrTextOverlaySettingsDto,
+}
+
+fn default_pin_min_width() -> f32 {
+    96.0
+}
+
+fn default_pin_min_height() -> f32 {
+    72.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrTextOverlaySettingsDto {
+    #[serde(default = "default_ocr_text_font_height_ratio")]
+    pub font_height_ratio: f32,
+    #[serde(default = "default_ocr_text_min_font_size")]
+    pub min_font_size: f32,
+    #[serde(default = "default_ocr_text_max_font_size")]
+    pub max_font_size: f32,
+    #[serde(default = "default_ocr_text_padding_x")]
+    pub padding_x: f32,
+    #[serde(default = "default_ocr_text_padding_y")]
+    pub padding_y: f32,
+    #[serde(default = "default_ocr_text_interaction_padding_x")]
+    pub interaction_padding_x: f32,
+    #[serde(default = "default_ocr_text_interaction_padding_y")]
+    pub interaction_padding_y: f32,
+}
+
+fn default_ocr_text_overlay_settings() -> OcrTextOverlaySettingsDto {
+    OcrTextOverlaySettingsDto {
+        font_height_ratio: default_ocr_text_font_height_ratio(),
+        min_font_size: default_ocr_text_min_font_size(),
+        max_font_size: default_ocr_text_max_font_size(),
+        padding_x: default_ocr_text_padding_x(),
+        padding_y: default_ocr_text_padding_y(),
+        interaction_padding_x: default_ocr_text_interaction_padding_x(),
+        interaction_padding_y: default_ocr_text_interaction_padding_y(),
+    }
+}
+
+fn default_ocr_text_font_height_ratio() -> f32 {
+    0.46
+}
+
+fn default_ocr_text_min_font_size() -> f32 {
+    6.0
+}
+
+fn default_ocr_text_max_font_size() -> f32 {
+    42.0
+}
+
+fn default_ocr_text_padding_x() -> f32 {
+    2.0
+}
+
+fn default_ocr_text_padding_y() -> f32 {
+    1.0
+}
+
+fn default_ocr_text_interaction_padding_x() -> f32 {
+    2.0
+}
+
+fn default_ocr_text_interaction_padding_y() -> f32 {
+    4.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,8 +235,11 @@ impl From<&Settings> for AppSettingsDto {
                 always_on_top: settings.pin.always_on_top,
                 remember_position: settings.pin.remember_position,
                 zoom_step: settings.pin.zoom_step,
+                min_width: settings.pin.min_width,
+                min_height: settings.pin.min_height,
                 show_ocr_text: settings.pin.show_ocr_text,
                 show_translation_text: settings.pin.show_translation_text,
+                ocr_text: OcrTextOverlaySettingsDto::from(&settings.pin.ocr_text),
             },
             ocr: OcrSettingsDto {
                 mode: ocr_mode_name(&settings.ocr.mode),
@@ -229,8 +305,11 @@ impl From<AppSettingsDto> for Settings {
         settings.pin.always_on_top = dto.pin.always_on_top;
         settings.pin.remember_position = dto.pin.remember_position;
         settings.pin.zoom_step = dto.pin.zoom_step.clamp(0.05, 0.5);
+        settings.pin.min_width = dto.pin.min_width.clamp(16.0, 2048.0);
+        settings.pin.min_height = dto.pin.min_height.clamp(16.0, 2048.0);
         settings.pin.show_ocr_text = dto.pin.show_ocr_text;
         settings.pin.show_translation_text = dto.pin.show_translation_text;
+        settings.pin.ocr_text = dto.pin.ocr_text.into_settings();
 
         settings.ocr.mode = parse_ocr_mode(&dto.ocr.mode);
         settings.ocr.provider = parse_ocr_provider(&dto.ocr.provider);
@@ -259,6 +338,36 @@ impl From<AppSettingsDto> for Settings {
         settings.history.max_entries = dto.history.max_entries.clamp(10, 10_000);
 
         settings
+    }
+}
+
+impl From<&shared_models::OcrTextOverlaySettings> for OcrTextOverlaySettingsDto {
+    fn from(settings: &shared_models::OcrTextOverlaySettings) -> Self {
+        Self {
+            font_height_ratio: settings.font_height_ratio,
+            min_font_size: settings.min_font_size,
+            max_font_size: settings.max_font_size,
+            padding_x: settings.padding_x,
+            padding_y: settings.padding_y,
+            interaction_padding_x: settings.interaction_padding_x,
+            interaction_padding_y: settings.interaction_padding_y,
+        }
+    }
+}
+
+impl OcrTextOverlaySettingsDto {
+    fn into_settings(self) -> shared_models::OcrTextOverlaySettings {
+        let min_font_size = self.min_font_size.clamp(4.0, 96.0);
+        let max_font_size = self.max_font_size.clamp(min_font_size, 128.0);
+        shared_models::OcrTextOverlaySettings {
+            font_height_ratio: self.font_height_ratio.clamp(0.1, 2.0),
+            min_font_size,
+            max_font_size,
+            padding_x: self.padding_x.clamp(0.0, 32.0),
+            padding_y: self.padding_y.clamp(0.0, 32.0),
+            interaction_padding_x: self.interaction_padding_x.clamp(0.0, 48.0),
+            interaction_padding_y: self.interaction_padding_y.clamp(0.0, 48.0),
+        }
     }
 }
 

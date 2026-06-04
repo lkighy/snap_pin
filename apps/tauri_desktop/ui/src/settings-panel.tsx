@@ -286,6 +286,106 @@ export function SettingsPanel({
           value={settings.pin.zoomStep}
           onValueChange={(zoomStep) => updateSettings("pin", { zoomStep })}
         />
+        <NumberField
+          label={t("field.pinMinWidth")}
+          min={16}
+          max={2048}
+          step={1}
+          value={settings.pin.minWidth}
+          onValueChange={(minWidth) => updateSettings("pin", { minWidth })}
+        />
+        <NumberField
+          label={t("field.pinMinHeight")}
+          min={16}
+          max={2048}
+          step={1}
+          value={settings.pin.minHeight}
+          onValueChange={(minHeight) => updateSettings("pin", { minHeight })}
+        />
+        <NumberField
+          label={t("field.ocrTextFontRatio")}
+          min={0.1}
+          max={2}
+          step={0.01}
+          value={settings.pin.ocrText.fontHeightRatio}
+          onValueChange={(fontHeightRatio) =>
+            updateSettings("pin", {
+              ocrText: { ...settings.pin.ocrText, fontHeightRatio },
+            })
+          }
+        />
+        <NumberField
+          label={t("field.ocrTextMinFontSize")}
+          min={4}
+          max={96}
+          step={1}
+          value={settings.pin.ocrText.minFontSize}
+          onValueChange={(minFontSize) =>
+            updateSettings("pin", {
+              ocrText: { ...settings.pin.ocrText, minFontSize },
+            })
+          }
+        />
+        <NumberField
+          label={t("field.ocrTextMaxFontSize")}
+          min={4}
+          max={128}
+          step={1}
+          value={settings.pin.ocrText.maxFontSize}
+          onValueChange={(maxFontSize) =>
+            updateSettings("pin", {
+              ocrText: { ...settings.pin.ocrText, maxFontSize },
+            })
+          }
+        />
+        <NumberField
+          label={t("field.ocrTextPaddingX")}
+          min={0}
+          max={32}
+          step={0.5}
+          value={settings.pin.ocrText.paddingX}
+          onValueChange={(paddingX) =>
+            updateSettings("pin", {
+              ocrText: { ...settings.pin.ocrText, paddingX },
+            })
+          }
+        />
+        <NumberField
+          label={t("field.ocrTextPaddingY")}
+          min={0}
+          max={32}
+          step={0.5}
+          value={settings.pin.ocrText.paddingY}
+          onValueChange={(paddingY) =>
+            updateSettings("pin", {
+              ocrText: { ...settings.pin.ocrText, paddingY },
+            })
+          }
+        />
+        <NumberField
+          label={t("field.ocrTextInteractionPaddingX")}
+          min={0}
+          max={48}
+          step={0.5}
+          value={settings.pin.ocrText.interactionPaddingX}
+          onValueChange={(interactionPaddingX) =>
+            updateSettings("pin", {
+              ocrText: { ...settings.pin.ocrText, interactionPaddingX },
+            })
+          }
+        />
+        <NumberField
+          label={t("field.ocrTextInteractionPaddingY")}
+          min={0}
+          max={48}
+          step={0.5}
+          value={settings.pin.ocrText.interactionPaddingY}
+          onValueChange={(interactionPaddingY) =>
+            updateSettings("pin", {
+              ocrText: { ...settings.pin.ocrText, interactionPaddingY },
+            })
+          }
+        />
       </FieldGrid>
     );
   }

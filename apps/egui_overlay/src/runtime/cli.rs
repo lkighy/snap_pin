@@ -23,11 +23,20 @@ pub(crate) struct CliArgs {
     pub(crate) completion_action: String,
     pub(crate) pin_opacity: f32,
     pub(crate) pin_zoom_step: f32,
+    pub(crate) pin_min_width: f32,
+    pub(crate) pin_min_height: f32,
     pub(crate) pin_always_on_top: bool,
     pub(crate) ocr_provider: String,
     pub(crate) ocr_language_hint: Option<String>,
     pub(crate) ocr_default_model_id: Option<String>,
     pub(crate) ocr_models_registry: Option<PathBuf>,
+    pub(crate) ocr_text_font_height_ratio: f32,
+    pub(crate) ocr_text_min_font_size: f32,
+    pub(crate) ocr_text_max_font_size: f32,
+    pub(crate) ocr_text_padding_x: f32,
+    pub(crate) ocr_text_padding_y: f32,
+    pub(crate) ocr_text_interaction_padding_x: f32,
+    pub(crate) ocr_text_interaction_padding_y: f32,
     pub(crate) resident: bool,
     pub(crate) control_port: u16,
 }
@@ -55,11 +64,20 @@ impl CliArgs {
             completion_action: "pin".to_owned(),
             pin_opacity: 1.0,
             pin_zoom_step: 0.1,
+            pin_min_width: 96.0,
+            pin_min_height: 72.0,
             pin_always_on_top: true,
             ocr_provider: "local-mnn".to_owned(),
             ocr_language_hint: None,
             ocr_default_model_id: None,
             ocr_models_registry: None,
+            ocr_text_font_height_ratio: 0.46,
+            ocr_text_min_font_size: 6.0,
+            ocr_text_max_font_size: 42.0,
+            ocr_text_padding_x: 2.0,
+            ocr_text_padding_y: 1.0,
+            ocr_text_interaction_padding_x: 2.0,
+            ocr_text_interaction_padding_y: 4.0,
             resident: false,
             control_port: 47232,
         };
@@ -112,6 +130,12 @@ impl CliArgs {
                 "--pin-zoom-step" => {
                     parsed.pin_zoom_step = parse_next(&mut args, parsed.pin_zoom_step)
                 }
+                "--pin-min-width" => {
+                    parsed.pin_min_width = parse_next(&mut args, parsed.pin_min_width)
+                }
+                "--pin-min-height" => {
+                    parsed.pin_min_height = parse_next(&mut args, parsed.pin_min_height)
+                }
                 "--pin-always-on-top" => {
                     parsed.pin_always_on_top = parse_next(&mut args, parsed.pin_always_on_top)
                 }
@@ -125,8 +149,36 @@ impl CliArgs {
                     parsed.ocr_default_model_id = args.next().filter(|value| !value.is_empty())
                 }
                 "--ocr-models-registry" => {
-                    parsed.ocr_models_registry =
-                        args.next().filter(|value| !value.is_empty()).map(PathBuf::from)
+                    parsed.ocr_models_registry = args
+                        .next()
+                        .filter(|value| !value.is_empty())
+                        .map(PathBuf::from)
+                }
+                "--ocr-text-font-height-ratio" => {
+                    parsed.ocr_text_font_height_ratio =
+                        parse_next(&mut args, parsed.ocr_text_font_height_ratio)
+                }
+                "--ocr-text-min-font-size" => {
+                    parsed.ocr_text_min_font_size =
+                        parse_next(&mut args, parsed.ocr_text_min_font_size)
+                }
+                "--ocr-text-max-font-size" => {
+                    parsed.ocr_text_max_font_size =
+                        parse_next(&mut args, parsed.ocr_text_max_font_size)
+                }
+                "--ocr-text-padding-x" => {
+                    parsed.ocr_text_padding_x = parse_next(&mut args, parsed.ocr_text_padding_x)
+                }
+                "--ocr-text-padding-y" => {
+                    parsed.ocr_text_padding_y = parse_next(&mut args, parsed.ocr_text_padding_y)
+                }
+                "--ocr-text-interaction-padding-x" => {
+                    parsed.ocr_text_interaction_padding_x =
+                        parse_next(&mut args, parsed.ocr_text_interaction_padding_x)
+                }
+                "--ocr-text-interaction-padding-y" => {
+                    parsed.ocr_text_interaction_padding_y =
+                        parse_next(&mut args, parsed.ocr_text_interaction_padding_y)
                 }
                 _ => {}
             }
@@ -136,6 +188,19 @@ impl CliArgs {
         parsed.magnifier_scale = parsed.magnifier_scale.clamp(1.0, 6.0);
         parsed.pin_opacity = parsed.pin_opacity.clamp(0.2, 1.0);
         parsed.pin_zoom_step = parsed.pin_zoom_step.clamp(0.05, 0.5);
+        parsed.pin_min_width = parsed.pin_min_width.clamp(16.0, 2048.0);
+        parsed.pin_min_height = parsed.pin_min_height.clamp(16.0, 2048.0);
+        parsed.ocr_text_font_height_ratio = parsed.ocr_text_font_height_ratio.clamp(0.1, 2.0);
+        parsed.ocr_text_min_font_size = parsed.ocr_text_min_font_size.clamp(4.0, 96.0);
+        parsed.ocr_text_max_font_size = parsed
+            .ocr_text_max_font_size
+            .clamp(parsed.ocr_text_min_font_size, 128.0);
+        parsed.ocr_text_padding_x = parsed.ocr_text_padding_x.clamp(0.0, 32.0);
+        parsed.ocr_text_padding_y = parsed.ocr_text_padding_y.clamp(0.0, 32.0);
+        parsed.ocr_text_interaction_padding_x =
+            parsed.ocr_text_interaction_padding_x.clamp(0.0, 48.0);
+        parsed.ocr_text_interaction_padding_y =
+            parsed.ocr_text_interaction_padding_y.clamp(0.0, 48.0);
         parsed.width = parsed.width.max(64.0);
         parsed.height = parsed.height.max(64.0);
         parsed

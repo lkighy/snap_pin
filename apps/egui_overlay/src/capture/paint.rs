@@ -4,8 +4,10 @@ use eframe::egui::{
 };
 use image::{DynamicImage, GenericImageView};
 
+use crate::capture::app::{CaptureAction, ColorValueFormat, PointerPixel};
 use crate::runtime::text::OverlayText;
-use crate::{CaptureAction, ColorValueFormat, MAGNIFIER_SAMPLE_SIZE, PointerPixel};
+
+const MAGNIFIER_SAMPLE_SIZE: i32 = 17;
 
 const TOOLBAR_BUTTON_SIZE: f32 = 28.0;
 const TOOLBAR_BUTTON_GAP: f32 = 4.0;

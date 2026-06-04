@@ -98,8 +98,11 @@ pub struct PinSettings {
     pub always_on_top: bool,
     pub remember_position: bool,
     pub zoom_step: f32,
+    pub min_width: f32,
+    pub min_height: f32,
     pub show_ocr_text: bool,
     pub show_translation_text: bool,
+    pub ocr_text: OcrTextOverlaySettings,
 }
 
 impl Default for PinSettings {
@@ -110,8 +113,36 @@ impl Default for PinSettings {
             always_on_top: true,
             remember_position: true,
             zoom_step: 0.1,
+            min_width: 96.0,
+            min_height: 72.0,
             show_ocr_text: true,
             show_translation_text: true,
+            ocr_text: OcrTextOverlaySettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OcrTextOverlaySettings {
+    pub font_height_ratio: f32,
+    pub min_font_size: f32,
+    pub max_font_size: f32,
+    pub padding_x: f32,
+    pub padding_y: f32,
+    pub interaction_padding_x: f32,
+    pub interaction_padding_y: f32,
+}
+
+impl Default for OcrTextOverlaySettings {
+    fn default() -> Self {
+        Self {
+            font_height_ratio: 0.46,
+            min_font_size: 6.0,
+            max_font_size: 42.0,
+            padding_x: 2.0,
+            padding_y: 1.0,
+            interaction_padding_x: 2.0,
+            interaction_padding_y: 4.0,
         }
     }
 }
