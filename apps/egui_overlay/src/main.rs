@@ -141,6 +141,7 @@ fn native_options(args: &CliArgs) -> NativeOptions {
             } else {
                 WindowLevel::Normal
             };
+            let pin_size = clamp_pin_window_size(Vec2::new(args.width, args.height));
             ViewportBuilder::default()
                 .with_decorations(false)
                 .with_transparent(true)
@@ -148,7 +149,7 @@ fn native_options(args: &CliArgs) -> NativeOptions {
                 .with_resizable(true)
                 .with_taskbar(false)
                 .with_position([args.x, args.y])
-                .with_inner_size([args.width, args.height])
+                .with_inner_size([pin_size.x, pin_size.y])
                 .with_min_inner_size([96.0, 72.0])
         }
     };
@@ -753,6 +754,7 @@ impl CaptureOverlayApp {
         for queued in commands {
             let result = match queued.command {
                 OverlayCommand::Capture(command) => self.apply_capture_command(ctx, command),
+                OverlayCommand::PinSelection => self.pin_current_selection(ctx),
                 OverlayCommand::Error(error) => {
                     self.last_error = Some(error.clone());
                     Err(error)
@@ -763,6 +765,23 @@ impl CaptureOverlayApp {
                 let _ = completion.send(result);
             }
         }
+    }
+
+    fn pin_current_selection(&mut self, ctx: &Context) -> Result<(), String> {
+        if !matches!(self.status, CaptureStatus::Selecting) {
+            return Err("capture_overlay_inactive".to_owned());
+        }
+
+        let Some(selection) = self.selection else {
+            return Err("capture_selection_missing".to_owned());
+        };
+
+        if selection.width() < MIN_SELECTION_SIZE || selection.height() < MIN_SELECTION_SIZE {
+            return Err("capture_selection_too_small".to_owned());
+        }
+
+        self.run_capture_action(ctx, CaptureAction::Pin);
+        Ok(())
     }
 
     fn apply_capture_command(
@@ -961,6 +980,7 @@ struct ResizeEdges {
 #[derive(Debug)]
 enum OverlayCommand {
     Capture(OverlayCaptureCommand),
+    PinSelection,
     Error(String),
 }
 
@@ -1067,6 +1087,13 @@ struct OverlayPingCommand {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct OverlayPinSelectionCommand {
+    kind: String,
+    protocol: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SharedSnapshotCommand {
     mapping_name: String,
     byte_len: usize,
@@ -1131,6 +1158,34 @@ fn start_control_server(port: u16, queue: OverlayCommandQueue, ctx: Context) {
                                     )
                                     .as_bytes(),
                                 );
+                            } else if is_supported_pin_selection_command(&line) {
+                                log::info!(
+                                    "overlay pin-selection command accepted by control thread"
+                                );
+                                let (completion_tx, completion_rx) = mpsc::channel();
+                                push_overlay_command(
+                                    &queue,
+                                    QueuedOverlayCommand::with_completion(
+                                        OverlayCommand::PinSelection,
+                                        completion_tx,
+                                    ),
+                                );
+                                ctx.request_repaint();
+
+                                let result = completion_rx
+                                    .recv_timeout(Duration::from_millis(COMMAND_ACK_TIMEOUT_MS))
+                                    .unwrap_or_else(|_| {
+                                        log::error!(
+                                            "overlay UI did not ACK pin-selection command within {} ms",
+                                            COMMAND_ACK_TIMEOUT_MS
+                                        );
+                                        Err("resident screenshot overlay did not process the pin-selection command in time".to_owned())
+                                    });
+                                log::info!(
+                                    "overlay pin-selection command ACK result={}",
+                                    if result.is_ok() { "ok" } else { "error" }
+                                );
+                                write_control_response(&mut stream, result);
                             } else {
                                 match serde_json::from_str::<OverlayCaptureCommand>(&line) {
                                     Ok(command) => {
@@ -1249,6 +1304,12 @@ fn write_control_response(stream: &mut impl Write, result: Result<(), String>) {
 fn is_supported_ping(line: &str) -> bool {
     serde_json::from_str::<OverlayPingCommand>(line)
         .is_ok_and(|command| command.kind == "ping" && command.protocol == CONTROL_PROTOCOL_VERSION)
+}
+
+fn is_supported_pin_selection_command(line: &str) -> bool {
+    serde_json::from_str::<OverlayPinSelectionCommand>(line).is_ok_and(|command| {
+        command.kind == "pinSelection" && command.protocol == CONTROL_PROTOCOL_VERSION
+    })
 }
 
 fn park_resident_window(ctx: &Context, hwnd: Option<isize>) {
@@ -1594,7 +1655,11 @@ fn spawn_pin_window(launch: &PinWindowLaunch<'_>) -> Result<(), String> {
         .arg("--ocr-default-model-id")
         .arg(launch.ocr_default_model_id.unwrap_or(""))
         .arg("--ocr-models-registry")
-        .arg(launch.ocr_models_registry.unwrap_or_else(|| std::path::Path::new("")))
+        .arg(
+            launch
+                .ocr_models_registry
+                .unwrap_or_else(|| std::path::Path::new("")),
+        )
         .spawn()
         .map_err(|error| error.to_string())?;
     log::info!("pin window spawned pid={}", child.id());
@@ -1671,12 +1736,13 @@ impl PinWindowApp {
                 let image = image.to_rgba8();
                 let size = [image.width() as usize, image.height() as usize];
                 self.image_size = Vec2::new(size[0] as f32, size[1] as f32);
-                self.image_display_size = self.image_size;
+                self.image_display_size = clamp_pin_window_size(self.image_size);
                 self.texture = Some(ctx.load_texture(
                     "pinned-image",
                     ColorImage::from_rgba_unmultiplied(size, image.as_raw()),
                     TextureOptions::LINEAR,
                 ));
+                ctx.send_viewport_cmd(ViewportCommand::InnerSize(self.image_display_size));
                 log::info!("pin window image loaded size={}x{}", size[0], size[1]);
             }
             Err(error) => {
@@ -2278,18 +2344,26 @@ fn load_model_registry(path: Option<&std::path::Path>) -> ModelRegistry {
     };
 
     match std::fs::read_to_string(path) {
-        Ok(contents) => match serde_json::from_str::<Vec<shared_models::ModelManifest>>(&contents) {
-            Ok(models) => {
-                for model in models {
-                    registry.register(model);
+        Ok(contents) => {
+            match serde_json::from_str::<Vec<shared_models::ModelManifest>>(&contents) {
+                Ok(models) => {
+                    for model in models {
+                        registry.register(model);
+                    }
+                }
+                Err(error) => {
+                    log::error!(
+                        "failed to parse OCR model registry {}: {error}",
+                        path.display()
+                    );
                 }
             }
-            Err(error) => {
-                log::error!("failed to parse OCR model registry {}: {error}", path.display());
-            }
-        },
+        }
         Err(error) => {
-            log::warn!("OCR model registry not loaded from {}: {error}", path.display());
+            log::warn!(
+                "OCR model registry not loaded from {}: {error}",
+                path.display()
+            );
         }
     }
 
@@ -2327,6 +2401,15 @@ fn clamp_pin_window_size(size: Vec2) -> Vec2 {
         size *= PIN_MAX_SIDE / size.y;
     }
     size
+}
+
+fn fit_pin_image_size_to_canvas(image_size: Vec2, canvas_size: Vec2) -> Vec2 {
+    if image_size.x <= 0.0 || image_size.y <= 0.0 || canvas_size.x <= 0.0 || canvas_size.y <= 0.0 {
+        return image_size.max(Vec2::splat(1.0));
+    }
+
+    let scale = (canvas_size.x / image_size.x).min(canvas_size.y / image_size.y);
+    clamp_pin_window_size(image_size * scale)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3041,10 +3124,11 @@ impl App for PinWindowApp {
             .show(ctx, |ui| {
                 let canvas = ui.max_rect();
                 let response = ui.interact(canvas, Id::new("pin-drag"), Sense::click_and_drag());
-                if self.toolbar_edge.is_none()
-                    && (self.image_display_size - canvas.size()).length_sq() > f32::EPSILON
-                {
-                    self.image_display_size = canvas.size();
+                if self.toolbar_edge.is_none() {
+                    let fitted_size = fit_pin_image_size_to_canvas(self.image_size, canvas.size());
+                    if (self.image_display_size - fitted_size).length_sq() > f32::EPSILON {
+                        self.image_display_size = fitted_size;
+                    }
                 }
                 let image_rect = self.image_rect(canvas);
                 self.handle_canvas_response(ctx, &response, canvas, image_rect);

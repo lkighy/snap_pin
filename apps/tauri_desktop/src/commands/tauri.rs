@@ -235,7 +235,7 @@ pub fn save_settings(
 
     store::save(&app, &saved)?;
     tray::refresh(&app, &saved.interface.language).map_err(|error| error.to_string())?;
-    launcher::register_capture_hotkey_for_settings(&app, &settings)?;
+    launcher::register_global_hotkeys_for_settings(&app, &settings)?;
     if let Err(error) = launcher::ensure_overlay_resident(&app) {
         log::error!("failed to ensure resident overlay after settings save: {error}");
     }

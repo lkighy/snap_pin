@@ -49,6 +49,7 @@ fn main() {
             app.manage(Mutex::new(state));
             app.manage(Mutex::new(commands::tauri::ModelDownloadRuntime::default()));
             app.manage(Mutex::new(None::<platform_win32::HotkeyListener>));
+            app.manage(Mutex::new(None::<capture::launcher::PinHotkeyListener>));
             app.manage(Mutex::new(
                 capture::launcher::CaptureOverlayRuntime::default(),
             ));
@@ -62,8 +63,8 @@ fn main() {
             } else {
                 log::error!("main window not found during startup");
             }
-            if let Err(error) = capture::launcher::register_capture_hotkey(&app_handle) {
-                log::error!("failed to register capture hotkey: {error}");
+            if let Err(error) = capture::launcher::register_global_hotkeys(&app_handle) {
+                log::error!("failed to register global hotkeys: {error}");
             }
             if let Err(error) = capture::launcher::ensure_overlay_resident(&app_handle) {
                 log::error!("failed to ensure resident overlay: {error}");
