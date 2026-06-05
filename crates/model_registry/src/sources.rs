@@ -121,3 +121,55 @@ pub fn find_builtin_ocr_package_source(model_id: &str) -> Option<ModelPackageSou
         .into_iter()
         .find(|source| source.model_id == model_id)
 }
+
+pub fn builtin_translation_package_sources() -> Vec<ModelPackageSource> {
+    vec![ModelPackageSource {
+        model_id: "opus-mt-en-zh-ct2-int8",
+        source_id: "huggingface-gaudi-opus-mt-en-zh-ctranslate2",
+        source_name: "gaudi/opus-mt-en-zh-ctranslate2",
+        homepage: "https://huggingface.co/gaudi/opus-mt-en-zh-ctranslate2",
+        files: vec![
+            ModelPackageFileSource {
+                role: "model",
+                url: "https://huggingface.co/gaudi/opus-mt-en-zh-ctranslate2/resolve/main/model.bin",
+                package_file_name: "model.bin",
+                local_file_name: "model.bin",
+                sha256: None,
+            },
+            ModelPackageFileSource {
+                role: "config",
+                url: "https://huggingface.co/gaudi/opus-mt-en-zh-ctranslate2/resolve/main/config.json",
+                package_file_name: "config.json",
+                local_file_name: "config.json",
+                sha256: None,
+            },
+            ModelPackageFileSource {
+                role: "source_tokenizer",
+                url: "https://huggingface.co/gaudi/opus-mt-en-zh-ctranslate2/resolve/main/source.spm",
+                package_file_name: "source.spm",
+                local_file_name: "source.spm",
+                sha256: None,
+            },
+            ModelPackageFileSource {
+                role: "target_tokenizer",
+                url: "https://huggingface.co/gaudi/opus-mt-en-zh-ctranslate2/resolve/main/target.spm",
+                package_file_name: "target.spm",
+                local_file_name: "target.spm",
+                sha256: None,
+            },
+            ModelPackageFileSource {
+                role: "vocabulary",
+                url: "https://huggingface.co/gaudi/opus-mt-en-zh-ctranslate2/resolve/main/shared_vocabulary.json",
+                package_file_name: "shared_vocabulary.json",
+                local_file_name: "shared_vocabulary.json",
+                sha256: None,
+            },
+        ],
+    }]
+}
+
+pub fn find_builtin_translation_package_source(model_id: &str) -> Option<ModelPackageSource> {
+    builtin_translation_package_sources()
+        .into_iter()
+        .find(|source| source.model_id == model_id)
+}

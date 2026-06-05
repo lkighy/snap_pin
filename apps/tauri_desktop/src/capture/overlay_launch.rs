@@ -12,7 +12,9 @@ impl OverlayLaunch {
     pub(crate) fn description(&self) -> String {
         match self {
             OverlayLaunch::Executable(path) => format!("executable {}", path.display()),
-            OverlayLaunch::Cargo { workspace } => format!("cargo run in {}", workspace.display()),
+            OverlayLaunch::Cargo { workspace } => {
+                format!("PowerShell cargo run in {}", workspace.display())
+            }
         }
     }
 
@@ -24,15 +26,31 @@ impl OverlayLaunch {
                 command
             }
             OverlayLaunch::Cargo { workspace } => {
-                let mut command = std::process::Command::new("cargo");
+                let mut cargo_args = vec![
+                    "run".to_owned(),
+                    "-p".to_owned(),
+                    "egui_overlay".to_owned(),
+                    "--features".to_owned(),
+                    "local-ocr-rs,local-translate-ct2".to_owned(),
+                    "--".to_owned(),
+                ];
+                cargo_args.extend(overlay_args);
+                let cargo_args_json = serde_json::to_string(&cargo_args).unwrap_or_else(|error| {
+                    log::error!("failed to serialize overlay cargo args: {error}");
+                    "[]".to_owned()
+                });
+
+                let mut command = std::process::Command::new("pwsh");
                 command
-                    .arg("run")
-                    .arg("-p")
-                    .arg("egui_overlay")
-                    .arg("--features")
-                    .arg("local-ocr-rs")
-                    .arg("--")
-                    .args(overlay_args)
+                    .arg(
+                        workspace
+                            .join("scripts")
+                            .join("check-translate-ct2-windows.ps1"),
+                    )
+                    .arg("-CargoArgsJson")
+                    .arg(cargo_args_json)
+                    .arg("-ExtraPath")
+                    .arg(mnn_dll_dir(workspace))
                     .current_dir(workspace);
                 prepend_mnn_dll_path(&mut command, workspace);
                 command
@@ -42,13 +60,7 @@ impl OverlayLaunch {
 }
 
 fn prepend_mnn_dll_path(command: &mut std::process::Command, workspace: &Path) {
-    let mnn_lib = workspace
-        .join("third_party")
-        .join("ocr-rs-2.2.2")
-        .join("3rd_party")
-        .join("prebuilt")
-        .join("mnn-dev-windows-x86_64")
-        .join("lib");
+    let mnn_lib = mnn_dll_dir(workspace);
 
     if !mnn_lib.exists() {
         return;
@@ -66,6 +78,16 @@ fn prepend_mnn_dll_path(command: &mut std::process::Command, workspace: &Path) {
     if let Some(path) = path {
         command.env("PATH", path);
     }
+}
+
+fn mnn_dll_dir(workspace: &Path) -> PathBuf {
+    workspace
+        .join("third_party")
+        .join("ocr-rs-2.2.2")
+        .join("3rd_party")
+        .join("prebuilt")
+        .join("mnn-dev-windows-x86_64")
+        .join("lib")
 }
 
 pub(crate) fn overlay_launch(app: &AppHandle) -> Result<OverlayLaunch, String> {

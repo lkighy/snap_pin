@@ -8,7 +8,7 @@ use shared_models::{
     CoreCommand, CoreEvent, ImageData, LanguageCode, OcrJob, OcrProvider, Settings,
     TranslateProvider, TranslationRequest,
 };
-use translate_engine::{MockTranslateEngine, TranslateEngine};
+use translate_engine::{RoutedTranslateEngine, TranslateEngine, TranslateEngineError};
 
 use crate::{
     ClipboardManager, ConfigStore, HistoryStore, HotkeyManager, OcrCoordinator, PluginRegistry,
@@ -24,7 +24,7 @@ pub struct CoreService {
     translate: TranslateCoordinator,
     pending_ocr_translations: HashMap<String, String>,
     ocr_engine: RoutedOcrEngine,
-    translate_engine: MockTranslateEngine,
+    translate_engine: RoutedTranslateEngine,
     models: ModelRegistry,
     hotkeys: HotkeyManager,
     clipboard: ClipboardManager,
@@ -43,7 +43,7 @@ impl Default for CoreService {
             translate: TranslateCoordinator::default(),
             pending_ocr_translations: HashMap::new(),
             ocr_engine: RoutedOcrEngine::default(),
-            translate_engine: MockTranslateEngine::default(),
+            translate_engine: RoutedTranslateEngine::default(),
             models: ModelRegistry::with_builtin_defaults(),
             hotkeys: HotkeyManager::default(),
             clipboard: ClipboardManager::default(),
@@ -111,6 +111,7 @@ impl CoreService {
             "ocr",
             ocr_engine::local_runtime_status(),
             "translate",
+            translate_engine::local_runtime_status(),
             "hotkeys",
             "clipboard",
             "plugins",
@@ -119,6 +120,10 @@ impl CoreService {
 
     pub fn local_ocr_runtime_status(&self) -> &'static str {
         ocr_engine::local_runtime_status()
+    }
+
+    pub fn local_translate_runtime_status(&self) -> &'static str {
+        translate_engine::local_runtime_status()
     }
 
     pub fn managers_ready(&self) -> bool {
@@ -250,35 +255,55 @@ impl CoreService {
             request.source_text.chars().count()
         );
         let mut events = vec![self.translate.enqueue(request.clone())];
-        self.apply_default_translation_model(&mut request);
 
-        match self.translate_engine.translate(&request) {
-            Ok(result) => {
-                if self.settings.history.enabled {
-                    self.history
-                        .lock()
-                        .expect("history lock poisoned")
-                        .push_translation(result.clone());
-                }
-                log::info!(
-                    "core translation completed request={} translated_chars={}",
-                    result.request_id,
-                    result.translated_text.chars().count()
-                );
-                events.push(CoreEvent::TranslationCompleted { result });
-            }
-            Err(error) => {
-                log::error!(
-                    "core translation failed code={} message={}",
-                    error.code,
-                    error.message
-                );
-                events.push(CoreEvent::Error {
-                    code: error.code,
-                    message: error.message,
-                });
-            }
+        if let Err(error) = self.apply_default_translation_model(&mut request) {
+            log::error!(
+                "core failed to prepare translation request={} code={} message={}",
+                request.id,
+                error.code,
+                error.message
+            );
+            events.push(CoreEvent::Error {
+                code: error.code,
+                message: error.message,
+            });
+            return events;
         }
+
+        let history = Arc::clone(&self.history);
+        let save_history = self.settings.history.enabled;
+        let sender = self.translate.completion_sender();
+        let engine = self.translate_engine.clone();
+        thread::spawn(move || {
+            let event = match engine.translate(&request) {
+                Ok(result) => {
+                    if save_history {
+                        history
+                            .lock()
+                            .expect("history lock poisoned")
+                            .push_translation(result.clone());
+                    }
+                    log::info!(
+                        "core translation completed request={} translated_chars={}",
+                        result.request_id,
+                        result.translated_text.chars().count()
+                    );
+                    CoreEvent::TranslationCompleted { result }
+                }
+                Err(error) => {
+                    log::error!(
+                        "core translation failed code={} message={}",
+                        error.code,
+                        error.message
+                    );
+                    CoreEvent::Error {
+                        code: error.code,
+                        message: error.message,
+                    }
+                }
+            };
+            let _ = sender.send(event);
+        });
 
         events
     }
@@ -335,6 +360,8 @@ impl CoreService {
             events.extend(self.run_translation(request));
         }
 
+        events.extend(self.translate.drain_completed());
+
         events
     }
 
@@ -365,28 +392,54 @@ impl CoreService {
         }
     }
 
-    fn apply_default_translation_model(&mut self, request: &mut TranslationRequest) {
-        if request.model_id.is_none() && matches!(request.provider, TranslateProvider::Local(_)) {
-            request.model_id = self
-                .models
-                .recommended_translation(
-                    request
-                        .source_language
-                        .as_ref()
-                        .map(|language| language.0.as_str()),
-                    &request.target_language.0,
-                )
-                .map(|model| model.id.clone());
+    fn apply_default_translation_model(
+        &mut self,
+        request: &mut TranslationRequest,
+    ) -> Result<(), TranslateEngineError> {
+        if !matches!(request.provider, TranslateProvider::Local(_)) {
+            return Ok(());
         }
 
-        if let Some(model) = request
+        if request.model_id.is_none() && matches!(request.provider, TranslateProvider::Local(_)) {
+            request.model_id = self
+                .settings
+                .translate
+                .default_model_id
+                .clone()
+                .or_else(|| {
+                    self.models
+                        .recommended_translation(
+                            request
+                                .source_language
+                                .as_ref()
+                                .map(|language| language.0.as_str()),
+                            &request.target_language.0,
+                        )
+                        .map(|model| model.id.clone())
+                });
+        }
+
+        let Some(model) = request
             .model_id
             .as_deref()
             .and_then(|id| self.models.find(id))
-        {
-            log::info!("core loading translation model id={}", model.id);
-            let _ = self.translate_engine.load_model(model);
-        }
+        else {
+            return Err(TranslateEngineError::new(
+                "translation_model_not_found",
+                format!(
+                    "no local translation model is available for '{} -> {}'",
+                    request
+                        .source_language
+                        .as_ref()
+                        .map(|language| language.0.as_str())
+                        .unwrap_or("auto"),
+                    request.target_language.0
+                ),
+            ));
+        };
+
+        log::info!("core loading translation model id={}", model.id);
+        self.translate_engine.load_model(model)
     }
 }
 
@@ -458,8 +511,9 @@ mod tests {
     use std::time::Duration;
 
     use shared_models::{
-        CoreCommand, CoreEvent, ImageData, ImageFormat, ImageId, ImageMetadata, OcrJob,
-        OcrLocalBackend, OcrProvider, Point, Rect, Settings, Size,
+        CoreCommand, CoreEvent, ImageData, ImageFormat, ImageId, ImageMetadata, LanguageCode,
+        ModelDomain, ModelFile, ModelManifest, ModelSource, OcrJob, OcrLocalBackend, OcrProvider,
+        Point, Rect, Settings, Size, TranslateLocalBackend, TranslateProvider, TranslationRequest,
     };
 
     use super::CoreService;
@@ -554,5 +608,115 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, CoreEvent::OcrQueued { .. }))
         );
+    }
+
+    #[test]
+    fn local_translation_reports_disabled_runtime_without_mock_result() {
+        let mut service = CoreService::default();
+        let model_root = std::env::temp_dir().join(format!(
+            "snap-pin-core-translation-model-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&model_root).unwrap();
+        std::fs::write(model_root.join("model.bin"), [1]).unwrap();
+        std::fs::write(model_root.join("config.json"), [2]).unwrap();
+        std::fs::write(model_root.join("source.spm"), [3]).unwrap();
+        std::fs::write(model_root.join("target.spm"), [4]).unwrap();
+
+        service.handle_command(CoreCommand::RegisterModel(translation_manifest(
+            ModelSource::LocalPath(model_root.to_string_lossy().into_owned()),
+        )));
+
+        let events = service.handle_command(CoreCommand::Translate {
+            request: TranslationRequest {
+                id: "translate-test".to_owned(),
+                source_text: "hello".to_owned(),
+                source_language: Some(LanguageCode::new("en")),
+                target_language: LanguageCode::new("zh-CN"),
+                provider: TranslateProvider::Local(TranslateLocalBackend::CTranslate2),
+                model_id: Some("test-opus-mt-en-zh-ct2-int8".to_owned()),
+                context: None,
+            },
+        });
+
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                CoreEvent::TranslationQueued { request_id } if request_id == "translate-test"
+            )
+        }));
+        assert!(
+            !events
+                .iter()
+                .any(|event| { matches!(event, CoreEvent::TranslationCompleted { .. }) })
+        );
+
+        let mut drained = Vec::new();
+        for _ in 0..20 {
+            thread::sleep(Duration::from_millis(10));
+            drained.extend(service.handle_command(CoreCommand::DrainEvents));
+            if drained
+                .iter()
+                .any(|event| matches!(event, CoreEvent::Error { .. }))
+            {
+                break;
+            }
+        }
+
+        assert!(drained.iter().any(|event| {
+            matches!(
+                event,
+                CoreEvent::Error { code, .. } if code == "local_translate_runtime_disabled"
+            )
+        }));
+
+        let _ = std::fs::remove_dir_all(model_root);
+    }
+
+    #[test]
+    fn local_translation_requires_imported_model_files() {
+        let mut service = CoreService::default();
+
+        let events = service.handle_command(CoreCommand::Translate {
+            request: TranslationRequest {
+                id: "translate-test".to_owned(),
+                source_text: "hello".to_owned(),
+                source_language: Some(LanguageCode::new("en")),
+                target_language: LanguageCode::new("zh-CN"),
+                provider: TranslateProvider::Local(TranslateLocalBackend::CTranslate2),
+                model_id: Some("opus-mt-en-zh-ct2-int8".to_owned()),
+                context: None,
+            },
+        });
+
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                CoreEvent::Error { code, .. } if code == "translation_model_not_installed"
+            )
+        }));
+    }
+
+    fn translation_manifest(source: ModelSource) -> ModelManifest {
+        ModelManifest {
+            id: "test-opus-mt-en-zh-ct2-int8".to_owned(),
+            name: "Test OPUS-MT English to Chinese CTranslate2 int8".to_owned(),
+            domain: ModelDomain::Translation,
+            family: "opus-mt".to_owned(),
+            backend: "ctranslate2".to_owned(),
+            version: "marian".to_owned(),
+            source_languages: vec!["en".to_owned()],
+            target_languages: vec!["zh-CN".to_owned()],
+            quantization: Some("int8".to_owned()),
+            low_spec_friendly: true,
+            multilingual: false,
+            source,
+            files: vec![
+                ModelFile::required("model", "model.bin"),
+                ModelFile::required("config", "config.json"),
+                ModelFile::required("source_tokenizer", "source.spm"),
+                ModelFile::required("target_tokenizer", "target.spm"),
+            ],
+        }
     }
 }

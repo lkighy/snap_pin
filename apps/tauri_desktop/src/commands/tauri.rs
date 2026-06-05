@@ -22,6 +22,7 @@ pub struct AppStatus {
     pub model_summary: String,
     pub history_summary: String,
     pub local_ocr_runtime_status: String,
+    pub local_translate_runtime_status: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -130,6 +131,7 @@ pub fn app_status(state: State<'_, Mutex<ShellState>>) -> Result<AppStatus, Stri
         model_summary: state.model_summary(),
         history_summary: state.history_summary(),
         local_ocr_runtime_status: state.local_ocr_runtime_status().to_owned(),
+        local_translate_runtime_status: state.local_translate_runtime_status().to_owned(),
     };
     log::info!("tauri command app_status completed");
     Ok(status)
@@ -229,6 +231,10 @@ pub fn save_settings(
             log::warn!("disabling local auto OCR because runtime or model is not ready");
             settings.ocr.auto_run_after_capture = false;
         }
+        if should_disable_local_auto_translate(&settings, &state) {
+            log::warn!("disabling local auto translation because runtime or model is not ready");
+            settings.translate.auto_translate_after_ocr = false;
+        }
         state.update_settings(settings.clone());
         AppSettingsDto::from(state.settings())
     };
@@ -319,11 +325,14 @@ pub fn download_builtin_ocr_model(
     model_id: String,
 ) -> Result<ModelImportResponse, String> {
     log::info!("tauri command download_builtin_ocr_model started model_id={model_id}");
-    let source = model_registry::find_builtin_ocr_package_source(&model_id).ok_or_else(|| {
-        format!("model_download_source_missing: unsupported model id '{model_id}'")
-    })?;
-    let manifest = models::storage(&app)?
-        .download_builtin_ocr_package(&source)
+    let source = find_builtin_package_source(&model_id)?;
+    let storage = models::storage(&app)?;
+    let manifest =
+        if model_registry::find_builtin_translation_package_source(source.model_id).is_some() {
+            storage.download_builtin_translation_package(&source)
+        } else {
+            storage.download_builtin_ocr_package(&source)
+        }
         .map_err(|error| format!("{}: {}", error.code, error.message))?
         .manifest;
 
@@ -335,7 +344,14 @@ pub fn download_builtin_ocr_model(
             .map(|event| format!("{event:?}"))
             .collect::<Vec<_>>();
         let mut next_settings = state.settings().clone();
-        next_settings.ocr.default_model_id = Some(manifest.id.clone());
+        match manifest.domain {
+            shared_models::ModelDomain::Ocr => {
+                next_settings.ocr.default_model_id = Some(manifest.id.clone());
+            }
+            shared_models::ModelDomain::Translation => {
+                next_settings.translate.default_model_id = Some(manifest.id.clone());
+            }
+        }
         state.update_settings(next_settings);
         let settings = AppSettingsDto::from(state.settings());
         models::save(&app, state.model_manifests())?;
@@ -364,9 +380,7 @@ pub fn start_builtin_ocr_model_download(
     model_id: String,
 ) -> Result<ModelDownloadStatusDto, String> {
     log::info!("tauri command start_builtin_ocr_model_download started model_id={model_id}");
-    let source = model_registry::find_builtin_ocr_package_source(&model_id).ok_or_else(|| {
-        format!("model_download_source_missing: unsupported model id '{model_id}'")
-    })?;
+    let source = find_builtin_package_source(&model_id)?;
     let progress = Arc::new(Mutex::new(ModelDownloadProgressState::started(
         model_id.clone(),
     )));
@@ -460,25 +474,39 @@ fn download_builtin_ocr_model_in_background(
     progress: Arc<Mutex<ModelDownloadProgressState>>,
     cancel: Arc<AtomicBool>,
 ) -> Result<ModelImportResponse, String> {
-    let manifest = models::storage(&app)?
-        .download_builtin_ocr_package_with_progress(
-            &source,
-            |download_progress| {
-                if let Ok(mut state) = progress.lock() {
-                    state.role = download_progress.role;
-                    state.file_name = download_progress.file_name;
-                    state.file_index = download_progress.file_index;
-                    state.file_count = download_progress.file_count;
-                    state.downloaded_bytes = download_progress.downloaded_bytes;
-                    state.total_bytes = download_progress.total_bytes;
-                }
-            },
-            || cancel.load(Ordering::Relaxed),
-        )
+    let storage = models::storage(&app)?;
+    let manifest =
+        if model_registry::find_builtin_translation_package_source(source.model_id).is_some() {
+            storage.download_builtin_translation_package_with_progress(
+                &source,
+                |download_progress| update_download_progress(&progress, download_progress),
+                || cancel.load(Ordering::Relaxed),
+            )
+        } else {
+            storage.download_builtin_ocr_package_with_progress(
+                &source,
+                |download_progress| update_download_progress(&progress, download_progress),
+                || cancel.load(Ordering::Relaxed),
+            )
+        }
         .map_err(|error| format!("{}: {}", error.code, error.message))?
         .manifest;
 
     register_downloaded_model(app, manifest)
+}
+
+fn update_download_progress(
+    progress: &Arc<Mutex<ModelDownloadProgressState>>,
+    download_progress: model_registry::ModelPackageDownloadProgress,
+) {
+    if let Ok(mut state) = progress.lock() {
+        state.role = download_progress.role;
+        state.file_name = download_progress.file_name;
+        state.file_index = download_progress.file_index;
+        state.file_count = download_progress.file_count;
+        state.downloaded_bytes = download_progress.downloaded_bytes;
+        state.total_bytes = download_progress.total_bytes;
+    }
 }
 
 fn register_downloaded_model(
@@ -494,7 +522,14 @@ fn register_downloaded_model(
             .map(|event| format!("{event:?}"))
             .collect::<Vec<_>>();
         let mut next_settings = state.settings().clone();
-        next_settings.ocr.default_model_id = Some(manifest.id.clone());
+        match manifest.domain {
+            shared_models::ModelDomain::Ocr => {
+                next_settings.ocr.default_model_id = Some(manifest.id.clone());
+            }
+            shared_models::ModelDomain::Translation => {
+                next_settings.translate.default_model_id = Some(manifest.id.clone());
+            }
+        }
         state.update_settings(next_settings);
         let settings = AppSettingsDto::from(state.settings());
         models::save(&app, state.model_manifests())?;
@@ -513,6 +548,14 @@ fn register_downloaded_model(
         models: model_list,
         settings,
     })
+}
+
+fn find_builtin_package_source(
+    model_id: &str,
+) -> Result<model_registry::ModelPackageSource, String> {
+    model_registry::find_builtin_ocr_package_source(model_id)
+        .or_else(|| model_registry::find_builtin_translation_package_source(model_id))
+        .ok_or_else(|| format!("model_download_source_missing: unsupported model id '{model_id}'"))
 }
 
 fn model_download_status_from_progress(
@@ -613,6 +656,7 @@ fn model_summaries(models: &[shared_models::ModelManifest]) -> Vec<ModelSummaryD
                 availability,
                 path,
                 package_source: model_registry::find_builtin_ocr_package_source(&model.id)
+                    .or_else(|| model_registry::find_builtin_translation_package_source(&model.id))
                     .map(|source| source.source_name.to_owned()),
             }
         })
@@ -657,6 +701,58 @@ fn should_disable_local_auto_ocr(settings: &shared_models::Settings, state: &She
 
     let selected_model_id = settings.ocr.default_model_id.as_deref();
     !has_ready_local_ocr_model(state.model_manifests(), selected_model_id)
+}
+
+fn should_disable_local_auto_translate(
+    settings: &shared_models::Settings,
+    state: &ShellState,
+) -> bool {
+    if !settings.translate.auto_translate_after_ocr {
+        return false;
+    }
+    if !matches!(
+        settings.translate.provider,
+        shared_models::TranslateProvider::Local(_)
+    ) {
+        return false;
+    }
+    if state.local_translate_runtime_status() != "local-translate-ct2-enabled" {
+        return true;
+    }
+
+    let selected_model_id = settings.translate.default_model_id.as_deref();
+    !has_ready_local_translation_model(
+        state.model_manifests(),
+        selected_model_id,
+        &settings.translate.target_language,
+    )
+}
+
+fn has_ready_local_translation_model(
+    models: &[shared_models::ModelManifest],
+    selected_model_id: Option<&str>,
+    target_language: &str,
+) -> bool {
+    models.iter().any(|model| {
+        if selected_model_id.is_some_and(|id| id != model.id) {
+            return false;
+        }
+        if model.domain != shared_models::ModelDomain::Translation || model.backend != "ctranslate2"
+        {
+            return false;
+        }
+        if !model.supports_language_pair(None, target_language) {
+            return false;
+        }
+        let shared_models::ModelSource::LocalPath(root) = &model.source else {
+            return false;
+        };
+        model
+            .files
+            .iter()
+            .filter(|file| file.required)
+            .all(|file| Path::new(root).join(&file.path).exists())
+    })
 }
 
 fn has_ready_local_ocr_model(

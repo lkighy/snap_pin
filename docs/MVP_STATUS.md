@@ -59,7 +59,7 @@ History updated
 
 - 截图：未接 WGC/DXGI，使用模拟图像。
 - OCR：未接 `ocr-rs` / `rust-paddle-ocr`，使用 `MockOcrEngine`。
-- 翻译：未接 `ct2rs` / CTranslate2，使用 `MockTranslateEngine`。
+- 翻译：本地 CTranslate2 模型包导入、校验、路由和异步事件流已接入；pin 贴图窗口的翻译按钮已能对 OCR 文本发起本地翻译并渲染 Translation overlay；默认构建未接 `ct2rs` native runtime，会返回 `local_translate_runtime_disabled`，不再用 mock 冒充真实本地翻译。
 - Tauri：已接初始窗口、托盘和 commands；设置页可以读取和保存当前进程内 Settings，尚未持久化到磁盘。
 - 设置页面：已覆盖截图、贴图、OCR、翻译、快捷键、历史和模型入口。截图设置包含光标、冻结画面、放大镜、遮罩透明度、边框颜色、延迟和截图后动作。
 - egui：未接真实透明 overlay、GPU 渲染和 pin window。
@@ -100,11 +100,18 @@ History updated
 
 ```text
 接入 OCR MNN 后端
-接入翻译 CTranslate2 后端
 实现模型下载/导入和校验
 ```
 
 第五优先级：
+
+```text
+接入 ct2rs / CTranslate2 native runtime
+先支持 OPUS-MT/MarianMT 语言对 int8 模型真实推理
+完善本地翻译模型下载器和可用性状态
+```
+
+第六优先级：
 
 ```text
 接入外部 OCR/翻译 API

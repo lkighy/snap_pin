@@ -56,6 +56,14 @@ fn default_ocr_provider() -> String {
     "local-mnn".to_owned()
 }
 
+fn default_translate_provider() -> String {
+    "local-ct2".to_owned()
+}
+
+fn default_translate_target_language() -> String {
+    "zh-CN".to_owned()
+}
+
 fn default_ocr_text_font_height_ratio() -> f32 {
     0.46
 }
@@ -158,6 +166,12 @@ pub(crate) struct OverlayCaptureCommand {
     pub(crate) ocr_default_model_id: Option<String>,
     #[serde(default)]
     pub(crate) ocr_models_registry: Option<String>,
+    #[serde(default = "default_translate_provider")]
+    pub(crate) translate_provider: String,
+    #[serde(default = "default_translate_target_language")]
+    pub(crate) translate_target_language: String,
+    #[serde(default)]
+    pub(crate) translate_default_model_id: Option<String>,
     #[serde(default = "default_ocr_text_font_height_ratio")]
     pub(crate) ocr_text_font_height_ratio: f32,
     #[serde(default = "default_ocr_text_min_font_size")]

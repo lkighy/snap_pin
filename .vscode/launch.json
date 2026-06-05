@@ -6,7 +6,13 @@
       "type": "lldb",
       "request": "launch",
       "cargo": {
-        "args": ["build", "-p", "tauri_desktop", "--features", "local-ocr-rs"],
+        "args": [
+          "build",
+          "-p",
+          "tauri_desktop",
+          "--features",
+          "local-ocr-rs,local-translate-ct2"
+        ],
         "filter": {
           "name": "tauri_desktop",
           "kind": "bin"
@@ -15,6 +21,7 @@
       "args": [],
       "cwd": "${workspaceFolder}",
       "env": {
+        "CARGO_ENCODED_RUSTFLAGS": "-Ctarget-feature=+crt-static",
         "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}"
       },
       "preLaunchTask": "ui: ensure dev"
@@ -24,7 +31,13 @@
       "type": "lldb",
       "request": "launch",
       "cargo": {
-        "args": ["build", "-p", "tauri_desktop", "--features", "local-ocr-rs"],
+        "args": [
+          "build",
+          "-p",
+          "tauri_desktop",
+          "--features",
+          "local-ocr-rs,local-translate-ct2"
+        ],
         "filter": {
           "name": "tauri_desktop",
           "kind": "bin"
@@ -33,6 +46,7 @@
       "args": ["--mvp-cli"],
       "cwd": "${workspaceFolder}",
       "env": {
+        "CARGO_ENCODED_RUSTFLAGS": "-Ctarget-feature=+crt-static",
         "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}"
       }
     }

@@ -79,6 +79,7 @@ export const defaultStatus: AppStatus = {
   modelSummary: "Loading...",
   historySummary: "Loading...",
   localOcrRuntimeStatus: "local-ocr-rs-disabled",
+  localTranslateRuntimeStatus: "local-translate-ct2-disabled",
 };
 
 export type SaveStatusKey =

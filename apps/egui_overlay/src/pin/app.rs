@@ -9,7 +9,7 @@ use eframe::egui::{
 };
 use eframe::{App, CreationContext, Frame};
 use image::DynamicImage;
-use shared_models::{OcrProvider, OcrResult, Size, TextOverlay};
+use shared_models::{OcrProvider, OcrResult, Size, TextOverlay, TranslateProvider};
 
 use crate::capture::hotkeys::{command_shift_shortcut_pressed, copy_shortcut_pressed};
 use crate::capture::paint::{draw_error, draw_pin_border};
@@ -21,6 +21,10 @@ use crate::pin::text_overlay::{
 use crate::pin::toolbar::{
     PinToolbarAction, PinToolbarEdge, PinToolbarState, draw_pin_toolbar, pin_image_rect,
     pin_toolbar_action_at, pin_toolbar_bounds, pin_toolbar_rect, pin_window_size_for_image,
+};
+use crate::pin::translate::{
+    PinBlockTranslateRequest, PinBlockTranslation, PinTranslatableBlock, parse_translate_provider,
+    translate_pin_blocks,
 };
 use crate::pin::window::{
     PIN_MIN_OPACITY, PIN_OPACITY_STEP, PinWindowSizing, clamp_pin_window_size,
@@ -49,6 +53,12 @@ pub(crate) struct PinWindowApp {
     ocr_result: Option<OcrResult>,
     ocr_status: Option<String>,
     selected_ocr_block: Option<usize>,
+    translate_provider: TranslateProvider,
+    translate_target_language: String,
+    translate_default_model_id: Option<String>,
+    translate_receiver: Option<mpsc::Receiver<Result<Vec<PinBlockTranslation>, String>>>,
+    block_translations: Vec<PinBlockTranslation>,
+    translate_after_ocr: bool,
     ocr_text_style: OcrTextOverlayStyle,
 }
 
@@ -78,6 +88,12 @@ impl PinWindowApp {
             ocr_result: None,
             ocr_status: None,
             selected_ocr_block: None,
+            translate_provider: parse_translate_provider(&args.translate_provider),
+            translate_target_language: args.translate_target_language,
+            translate_default_model_id: args.translate_default_model_id,
+            translate_receiver: None,
+            block_translations: Vec::new(),
+            translate_after_ocr: false,
             ocr_text_style: OcrTextOverlayStyle::new(
                 args.ocr_text_font_height_ratio,
                 args.ocr_text_min_font_size,
@@ -313,10 +329,7 @@ impl PinWindowApp {
             PinToolbarAction::CopyAllText => self.copy_all_ocr_text(),
             PinToolbarAction::SaveImage => self.save_pin_image(),
             PinToolbarAction::Translate => {
-                log::info!(
-                    "pin toolbar requested translation image={:?}; core-service IPC hook pending",
-                    self.image_path
-                );
+                self.run_translation_for_pin(ctx);
             }
             PinToolbarAction::Close => {
                 ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -329,6 +342,7 @@ impl PinWindowApp {
                 | PinToolbarAction::CopySelectedText
                 | PinToolbarAction::CopyAllText
                 | PinToolbarAction::RunOcr
+                | PinToolbarAction::Translate
                 | PinToolbarAction::CloseOcr
         ) {
             self.hide_toolbar(ctx, canvas);
@@ -451,11 +465,20 @@ impl PinWindowApp {
 
         let image_size = Size::new(self.image_size.x.max(1.0), self.image_size.y.max(1.0));
         for (index, block) in result.blocks.iter().enumerate() {
+            let translation = self.block_translation(index);
             let overlay = TextOverlay {
-                text: block.text.clone(),
-                language: block.language.clone(),
+                text: translation
+                    .map(|translation| translation.translated_text.clone())
+                    .unwrap_or_else(|| block.text.clone()),
+                language: translation
+                    .map(|translation| translation.target_language.clone())
+                    .or_else(|| block.language.clone()),
                 bounds: block.bounds,
-                role: shared_models::TextOverlayRole::Ocr,
+                role: if translation.is_some() {
+                    shared_models::TextOverlayRole::Translation
+                } else {
+                    shared_models::TextOverlayRole::Ocr
+                },
                 confidence: block.confidence,
             };
             draw_text_overlay(
@@ -483,6 +506,7 @@ impl PinWindowApp {
         self.ocr_status = Some("OCR running...".to_owned());
         self.ocr_result = None;
         self.selected_ocr_block = None;
+        self.block_translations.clear();
 
         let request = PinOcrRequest {
             path,
@@ -502,12 +526,64 @@ impl PinWindowApp {
         self.ocr_receiver = Some(receiver);
     }
 
+    fn run_translation_for_pin(&mut self, ctx: &Context) {
+        if self.translate_receiver.is_some() {
+            return;
+        }
+
+        let Some(result) = self.ocr_result.as_ref() else {
+            self.translate_after_ocr = true;
+            self.run_ocr_for_pin(ctx);
+            self.ocr_status = Some("OCR running before translation...".to_owned());
+            return;
+        };
+        let blocks = result
+            .blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, block)| !block.text.trim().is_empty())
+            .map(|(index, block)| PinTranslatableBlock {
+                index,
+                text: block.text.clone(),
+                source_language: block.language.clone(),
+            })
+            .collect::<Vec<_>>();
+        if blocks.is_empty() {
+            self.translate_after_ocr = true;
+            self.run_ocr_for_pin(ctx);
+            self.ocr_status = Some("OCR running before translation...".to_owned());
+            return;
+        }
+
+        self.translate_after_ocr = false;
+        self.ocr_status = Some("Translation running...".to_owned());
+        self.block_translations.clear();
+        let request = PinBlockTranslateRequest {
+            blocks,
+            target_language: self.translate_target_language.clone(),
+            provider: self.translate_provider.clone(),
+            default_model_id: self.translate_default_model_id.clone(),
+            models_registry: self.ocr_models_registry.clone(),
+        };
+        let (sender, receiver) = mpsc::channel();
+        let repaint_ctx = ctx.clone();
+        thread::spawn(move || {
+            let result = translate_pin_blocks(request);
+            let _ = sender.send(result);
+            repaint_ctx.request_repaint();
+        });
+        self.translate_receiver = Some(receiver);
+    }
+
     fn close_ocr(&mut self, ctx: &Context) {
         let previous_edge = self.toolbar_edge;
         self.ocr_receiver = None;
         self.ocr_result = None;
         self.ocr_status = None;
         self.selected_ocr_block = None;
+        self.translate_receiver = None;
+        self.block_translations.clear();
+        self.translate_after_ocr = false;
         self.resize_toolbar_window_from_viewport(ctx, previous_edge);
     }
 
@@ -531,12 +607,50 @@ impl PinWindowApp {
                 );
                 self.ocr_status = None;
                 self.selected_ocr_block = None;
+                self.block_translations.clear();
                 self.ocr_result = Some(result);
+                if self.translate_after_ocr {
+                    self.run_translation_for_pin(ctx);
+                }
             }
             Err(error) => {
                 log::error!("pin OCR failed: {error}");
                 self.ocr_result = None;
                 self.selected_ocr_block = None;
+                self.ocr_status = Some(error);
+            }
+        }
+        self.resize_toolbar_window_from_viewport(ctx, self.toolbar_edge);
+    }
+
+    fn drain_translation_result(&mut self, ctx: &Context) {
+        let Some(receiver) = &self.translate_receiver else {
+            return;
+        };
+
+        let Ok(result) = receiver.try_recv() else {
+            return;
+        };
+
+        self.translate_receiver = None;
+        self.translate_after_ocr = false;
+        match result {
+            Ok(translations) => {
+                let translated_chars = translations
+                    .iter()
+                    .map(|translation| translation.translated_text.chars().count())
+                    .sum::<usize>();
+                log::info!(
+                    "pin block translation completed blocks={} translated_chars={}",
+                    translations.len(),
+                    translated_chars
+                );
+                self.ocr_status = None;
+                self.block_translations = translations;
+            }
+            Err(error) => {
+                log::error!("pin translation failed: {error}");
+                self.block_translations.clear();
                 self.ocr_status = Some(error);
             }
         }
@@ -585,6 +699,12 @@ impl PinWindowApp {
     fn selected_ocr_text(&self) -> Option<String> {
         let result = self.ocr_result.as_ref()?;
         if let Some(index) = self.selected_ocr_block {
+            if let Some(translation) = self.block_translation(index) {
+                let text = translation.translated_text.trim();
+                if !text.is_empty() {
+                    return Some(text.to_owned());
+                }
+            }
             return result
                 .blocks
                 .get(index)
@@ -597,9 +717,26 @@ impl PinWindowApp {
     }
 
     fn all_ocr_text(&self) -> Option<String> {
+        if !self.block_translations.is_empty() {
+            let text = self
+                .block_translations
+                .iter()
+                .map(|translation| translation.translated_text.trim())
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            return (!text.is_empty()).then_some(text);
+        }
+
         let result = self.ocr_result.as_ref()?;
         let text = result.plain_text.trim();
         (!text.is_empty()).then(|| text.to_owned())
+    }
+
+    fn block_translation(&self, index: usize) -> Option<&PinBlockTranslation> {
+        self.block_translations
+            .iter()
+            .find(|translation| translation.index == index)
     }
 
     fn copy_selected_ocr_text_or_image(&mut self) {
@@ -729,6 +866,7 @@ impl PinWindowApp {
 impl App for PinWindowApp {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
         self.drain_ocr_result(ctx);
+        self.drain_translation_result(ctx);
         self.handle_shortcuts(ctx);
 
         egui::CentralPanel::default()

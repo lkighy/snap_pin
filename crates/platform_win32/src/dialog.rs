@@ -87,7 +87,11 @@ mod platform {
         title: &str,
         owner_hwnd: Option<isize>,
     ) -> Result<Option<PathBuf>, PlatformError> {
-        log::info!("folder dialog requested title={} owner={:?}", title, owner_hwnd);
+        log::info!(
+            "folder dialog requested title={} owner={:?}",
+            title,
+            owner_hwnd
+        );
         let _com = ComApartment::initialize()?;
         let dialog: IFileOpenDialog =
             unsafe { CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) }

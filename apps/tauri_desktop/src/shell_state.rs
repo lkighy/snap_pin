@@ -89,6 +89,10 @@ impl ShellState {
         self.core.local_ocr_runtime_status()
     }
 
+    pub fn local_translate_runtime_status(&self) -> &'static str {
+        self.core.local_translate_runtime_status()
+    }
+
     pub fn model_manifests(&self) -> &[shared_models::ModelManifest] {
         self.core.models().list()
     }

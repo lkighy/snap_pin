@@ -24,3 +24,4 @@ tauri-build = { version = "2" }
 [features]
 default = []
 local-ocr-rs = ["core_service/local-ocr-rs"]
+local-translate-ct2 = ["core_service/local-translate-ct2"]

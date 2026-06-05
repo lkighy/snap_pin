@@ -24,8 +24,19 @@ CaptureFinished
 低配默认：ct2rs + CTranslate2 + OPUS-MT/MarianMT int8
 多语言可选：ct2rs + CTranslate2 + NLLB distilled / M2M100
 实验后端：rust-bert / Candle
-外部 API：DeepL / Google / Azure / OpenAI / Baidu / Tencent / Custom HTTP
+后续 API：DeepL / Google / Azure / OpenAI / Baidu / Tencent / Custom HTTP
 ```
+
+实现顺序必须本地优先：
+
+```text
+阶段 1：本地 CTranslate2 语言对模型 MVP
+阶段 2：本地模型下载、导入、校验和可用性状态完善
+阶段 3：本地多语言模型和实验后端
+阶段 4：外部翻译 API provider
+```
+
+外部 API 是后续增强能力，不抢在本地模型 MVP 之前实现。第一版翻译功能必须先能在没有网络和没有第三方密钥的情况下，使用用户导入或下载的本地模型完成 OCR 文本翻译。
 
 ## 2. 本地模型选择
 
@@ -76,7 +87,51 @@ Candle
 
 本地 LLM 可用于润色或 AI Chat，但模型体积、延迟和低配体验不适合作为截图翻译默认方案。
 
-## 3. 模型下载与导入
+## 3. 本地模型 MVP
+
+第一阶段目标是把 `MockTranslateEngine` 替换为真实本地 CTranslate2 后端，并只覆盖一个低风险语言对，例如：
+
+```text
+en -> zh-CN
+```
+
+第一阶段必须完成：
+
+- 识别 CTranslate2 模型包目录。
+- 从 `ModelManifest` 找到模型根目录和必要文件。
+- 加载 OPUS-MT/MarianMT CTranslate2 int8 模型。
+- 对 OCR `plain_text` 执行整段翻译。
+- 通过 `TranslationCompleted` 回传结果。
+- 模型缺失、文件缺失、语言方向不匹配和 runtime 不可用时返回明确错误。
+
+当前实现状态：
+
+- 已完成 Translation manifest 导入和必要文件校验。
+- 已完成 `TranslationModelBundle`、本地 CTranslate2 engine 入口和 provider 路由。
+- 已完成 core_service 后台翻译任务和 `DrainEvents` 回收。
+- 已完成设置页本地翻译 runtime / 模型状态展示。
+- 待完成 `ct2rs` / CTranslate2 native runtime 的真实推理适配。
+
+第一阶段可以暂缓：
+
+- 外部 API。
+- 术语表、风格控制和上下文增强。
+- 多 provider 自动回退。
+- 多语言大模型自动下载。
+- 逐 OCR block 翻译和排版对齐。
+
+本地模型 MVP 验收标准：
+
+```text
+用户导入 en-zh CTranslate2 int8 模型
+  -> 截图 OCR 得到英文 plain_text
+  -> core_service 创建 TranslationRequest
+  -> translate_engine 使用本地模型翻译
+  -> CoreEvent::TranslationCompleted 返回中文译文
+  -> overlay / pin window 显示 Translation TextOverlay
+```
+
+## 4. 模型下载与导入
 
 翻译模型必须支持用户从指定位置下载或导入，不强制内置所有模型。
 
@@ -130,7 +185,7 @@ vocabulary = "shared_vocabulary.json"
 
 模型下载职责应放在后续的 `model_registry`，不要写进翻译推理后端。
 
-## 4. Rust 接入选择
+## 5. Rust 接入选择
 
 第一阶段推荐：
 
@@ -164,9 +219,9 @@ Candle
 - 不阻塞标准 CTranslate2 路线。
 - 遇到依赖体积、GPU/CPU runtime 或模型适配问题时，可以随时降级为隐藏功能。
 
-## 5. 外部翻译 API
+## 6. 外部翻译 API
 
-外部翻译 API 和本地模型是并列 provider。
+外部翻译 API 是本地模型 MVP 之后的 provider。架构上它和本地模型保持并列，但实现顺序必须后置，避免第一版翻译依赖网络、第三方账号或密钥存储。
 
 推荐 provider：
 
@@ -186,6 +241,13 @@ Custom HTTP
 - 用户机器配置低，不想跑本地模型。
 - 企业环境已有翻译服务。
 - 需要术语表、上下文、风格控制或长文本处理。
+
+启用条件：
+
+- 本地 CTranslate2 MVP 已经可用。
+- API key / token 已有安全存储方案。
+- 设置页已有隐私提示和用户确认。
+- core_service 已支持异步翻译事件，不会阻塞 overlay 和 pin window。
 
 安全规则：
 
@@ -226,7 +288,7 @@ provider        -> TranslateProvider
 - 支持用户选择失败后回退本地翻译或只返回错误。
 - 不自动把文本重试发送给多个外部 provider，除非用户明确开启。
 
-## 6. 代码架构
+## 7. 代码架构
 
 后续建议新增 crate：
 
@@ -267,8 +329,8 @@ crates/translate_engine
   src/ct2_backend.rs
   src/rust_bert_backend.rs
   src/candle_backend.rs
-  src/external_api.rs
-  src/http_client.rs
+  src/external_api.rs        // 本地 MVP 完成后再启用
+  src/http_client.rs         // 本地 MVP 完成后再启用
   src/tokenization.rs
 ```
 
@@ -280,9 +342,9 @@ translate_engine -> model_registry, shared_models
 model_registry -> shared_models
 ```
 
-`apps/tauri_desktop` 只负责设置页、模型选择 UI、下载/导入命令入口和外部 API 配置入口。`apps/egui_overlay` 只消费翻译结果并渲染 `TextOverlay`，不得直接调用翻译 engine。
+`apps/tauri_desktop` 只负责设置页、模型选择 UI、下载/导入命令入口；外部 API 配置入口在本地 MVP 完成后再加入。`apps/egui_overlay` 只消费翻译结果并渲染 `TextOverlay`，不得直接调用翻译 engine。
 
-## 7. 运行策略
+## 8. 运行策略
 
 翻译必须异步运行，不得阻塞截图 overlay 和 pin window 操作。
 
@@ -304,17 +366,18 @@ OcrCompleted
 - 支持取消翻译任务。
 - 支持只翻译用户选区或当前 pin 的文本。
 - 翻译队列默认串行或低并发，避免抢占 overlay 渲染。
-- 如果用户未下载对应语言对模型，提示下载、切换外部 API 或选择多语言模型。
+- 如果用户未下载对应语言对模型，第一阶段提示下载或导入本地模型；外部 API 完成后再允许用户切换到 API provider。
 
-## 8. 决策摘要
+## 9. 决策摘要
 
 当前决策：
 
 ```text
+实现顺序：先本地模型，后外部 API
 低配默认：ct2rs + CTranslate2 + OPUS-MT/MarianMT int8
 多语言可选：ct2rs + CTranslate2 + NLLB distilled / M2M100
 实验后端：rust-bert / Candle
-外部 API：DeepL / Google / Azure / OpenAI / Baidu / Tencent / Custom HTTP
+后续 API：DeepL / Google / Azure / OpenAI / Baidu / Tencent / Custom HTTP
 ```
 
 后续如果模型生态或 Rust crate 发生变化，可以更新本文档，并保持 `core_service` 只依赖抽象接口。

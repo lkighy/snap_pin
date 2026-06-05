@@ -98,6 +98,38 @@ The workspace patches `ocr-rs` locally only to build it as a Rust library. The
 upstream crate also emits a `cdylib`, which is not used by snap_pin and can fail
 to link against the prebuilt Windows MNN static library in release builds.
 
+## Translation Runtime
+
+The default workspace build keeps the native CTranslate2 runtime disabled.
+Without `local-translate-ct2`, local translation model packages can be imported
+and validated, but translation reports `local_translate_runtime_disabled`.
+
+To check the CTranslate2-backed adapter on Windows, the machine needs:
+
+- Rust MSVC toolchain.
+- Visual Studio 2022 C++ build tools.
+- CMake.
+
+Run the helper script after installing those tools:
+
+```powershell
+pwsh scripts/check-translate-ct2-windows.ps1
+```
+
+For a full desktop build with local OCR and local translation enabled:
+
+```powershell
+pwsh scripts/check-translate-ct2-windows.ps1 -CargoCommand "build -p tauri_desktop --release --features local-ocr-rs,local-translate-ct2"
+```
+
+Install CMake if it is missing:
+
+```powershell
+winget install Kitware.CMake
+# or
+choco install cmake -y
+```
+
 ## Workspace
 
 - `apps/tauri_desktop`: Tauri shell boundary for tray, settings, commands, and UI IPC.

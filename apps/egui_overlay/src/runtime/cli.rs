@@ -30,6 +30,9 @@ pub(crate) struct CliArgs {
     pub(crate) ocr_language_hint: Option<String>,
     pub(crate) ocr_default_model_id: Option<String>,
     pub(crate) ocr_models_registry: Option<PathBuf>,
+    pub(crate) translate_provider: String,
+    pub(crate) translate_target_language: String,
+    pub(crate) translate_default_model_id: Option<String>,
     pub(crate) ocr_text_font_height_ratio: f32,
     pub(crate) ocr_text_min_font_size: f32,
     pub(crate) ocr_text_max_font_size: f32,
@@ -71,6 +74,9 @@ impl CliArgs {
             ocr_language_hint: None,
             ocr_default_model_id: None,
             ocr_models_registry: None,
+            translate_provider: "local-ct2".to_owned(),
+            translate_target_language: "zh-CN".to_owned(),
+            translate_default_model_id: None,
             ocr_text_font_height_ratio: 0.46,
             ocr_text_min_font_size: 6.0,
             ocr_text_max_font_size: 42.0,
@@ -153,6 +159,17 @@ impl CliArgs {
                         .next()
                         .filter(|value| !value.is_empty())
                         .map(PathBuf::from)
+                }
+                "--translate-provider" => {
+                    parsed.translate_provider = parse_next(&mut args, parsed.translate_provider)
+                }
+                "--translate-target-language" => {
+                    parsed.translate_target_language =
+                        parse_next(&mut args, parsed.translate_target_language)
+                }
+                "--translate-default-model-id" => {
+                    parsed.translate_default_model_id =
+                        args.next().filter(|value| !value.is_empty())
                 }
                 "--ocr-text-font-height-ratio" => {
                     parsed.ocr_text_font_height_ratio =

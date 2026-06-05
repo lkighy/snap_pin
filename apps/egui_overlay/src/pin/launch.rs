@@ -14,6 +14,9 @@ pub(crate) struct PinWindowLaunch<'a> {
     pub(crate) ocr_language_hint: Option<&'a str>,
     pub(crate) ocr_default_model_id: Option<&'a str>,
     pub(crate) ocr_models_registry: Option<&'a Path>,
+    pub(crate) translate_provider: &'a str,
+    pub(crate) translate_target_language: &'a str,
+    pub(crate) translate_default_model_id: Option<&'a str>,
     pub(crate) ocr_text_font_height_ratio: f32,
     pub(crate) ocr_text_min_font_size: f32,
     pub(crate) ocr_text_max_font_size: f32,
@@ -67,6 +70,12 @@ pub(crate) fn spawn_pin_window(launch: &PinWindowLaunch<'_>) -> Result<(), Strin
         .arg(launch.ocr_default_model_id.unwrap_or(""))
         .arg("--ocr-models-registry")
         .arg(launch.ocr_models_registry.unwrap_or_else(|| Path::new("")))
+        .arg("--translate-provider")
+        .arg(launch.translate_provider)
+        .arg("--translate-target-language")
+        .arg(launch.translate_target_language)
+        .arg("--translate-default-model-id")
+        .arg(launch.translate_default_model_id.unwrap_or(""))
         .arg("--ocr-text-font-height-ratio")
         .arg(format!("{}", launch.ocr_text_font_height_ratio))
         .arg("--ocr-text-min-font-size")

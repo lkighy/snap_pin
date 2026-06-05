@@ -15,3 +15,4 @@ translate_engine.workspace = true
 [features]
 default = []
 local-ocr-rs = ["ocr_engine/local-ocr-rs"]
+local-translate-ct2 = ["translate_engine/local-translate-ct2"]

@@ -11,7 +11,7 @@ use shared_models::{ModelManifest, ModelSource};
 
 use crate::{
     ModelImportError, ModelPackageSource, ModelStorage, compatible_ocr_model, default_ocr_model,
-    import_manifest_file, lightweight_ocr_model,
+    default_translation_model, import_manifest_file, lightweight_ocr_model,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,6 +173,85 @@ impl ModelStorage {
             files: downloads,
         })
     }
+
+    pub fn download_builtin_translation_package(
+        &self,
+        source: &ModelPackageSource,
+    ) -> Result<ModelPackageDownloadResult, ModelImportError> {
+        self.download_builtin_translation_package_with_progress(source, |_| {}, || false)
+    }
+
+    pub fn download_builtin_translation_package_with_progress(
+        &self,
+        source: &ModelPackageSource,
+        progress: impl FnMut(ModelPackageDownloadProgress),
+        should_cancel: impl FnMut() -> bool,
+    ) -> Result<ModelPackageDownloadResult, ModelImportError> {
+        self.download_builtin_package_with_progress(
+            source,
+            write_builtin_translation_manifest,
+            progress,
+            should_cancel,
+        )
+    }
+
+    fn download_builtin_package_with_progress(
+        &self,
+        source: &ModelPackageSource,
+        write_manifest: impl Fn(
+            &ModelPackageSource,
+            &Path,
+            &BTreeMap<&str, String>,
+        ) -> Result<(), ModelImportError>,
+        mut progress: impl FnMut(ModelPackageDownloadProgress),
+        mut should_cancel: impl FnMut() -> bool,
+    ) -> Result<ModelPackageDownloadResult, ModelImportError> {
+        let model_dir = self.model_dir(&source.model_id);
+        fs::create_dir_all(&model_dir).map_err(|error| {
+            ModelImportError::new(
+                "model_download_storage_failed",
+                format!(
+                    "failed to create model download directory '{}': {error}",
+                    model_dir.display()
+                ),
+            )
+        })?;
+
+        let mut downloads = Vec::new();
+        let mut checksums = BTreeMap::new();
+        let file_count = source.files.len();
+        for (file_index, file) in source.files.iter().enumerate() {
+            let result = download_model_file_with_progress(
+                &ModelDownloadRequest {
+                    url: file.url.to_owned(),
+                    sha256: file.sha256.map(str::to_owned),
+                    target_path: model_dir.join(file.local_file_name),
+                },
+                |file_progress| {
+                    progress(ModelPackageDownloadProgress {
+                        file_index,
+                        file_count,
+                        role: file.role.to_owned(),
+                        file_name: file.local_file_name.to_owned(),
+                        downloaded_bytes: file_progress.downloaded_bytes,
+                        total_bytes: file_progress.total_bytes,
+                    });
+                },
+                &mut should_cancel,
+            )?;
+            checksums.insert(file.role, result.sha256.clone());
+            downloads.push(result);
+        }
+
+        write_manifest(source, &model_dir, &checksums)?;
+        let mut manifest = import_manifest_file(model_dir.join("manifest.toml"))?;
+        manifest.source = ModelSource::LocalPath(model_dir.to_string_lossy().into_owned());
+
+        Ok(ModelPackageDownloadResult {
+            manifest,
+            files: downloads,
+        })
+    }
 }
 
 fn write_builtin_ocr_manifest(
@@ -229,6 +308,77 @@ keys = "{keys_sha256}"
     write_atomic(&model_dir.join("manifest.toml"), manifest.as_bytes())
 }
 
+fn write_builtin_translation_manifest(
+    source: &ModelPackageSource,
+    model_dir: &Path,
+    checksums: &BTreeMap<&str, String>,
+) -> Result<(), ModelImportError> {
+    let model = default_translation_model_for_source(source)?;
+    let model_file = local_file_for_role(source, "model")?;
+    let config = local_file_for_role(source, "config")?;
+    let source_tokenizer = local_file_for_role(source, "source_tokenizer")?;
+    let target_tokenizer = local_file_for_role(source, "target_tokenizer")?;
+    let vocabulary = local_file_for_role(source, "vocabulary").unwrap_or("");
+    let manifest = format!(
+        r#"id = "{id}"
+name = "{name}"
+domain = "translation"
+family = "{family}"
+version = "{version}"
+backend = "{backend}"
+precision = "{precision}"
+source_languages = [{source_languages}]
+target_languages = [{target_languages}]
+low_spec_friendly = {low_spec_friendly}
+multilingual = {multilingual}
+
+[files]
+model = "{model_file}"
+config = "{config}"
+source_tokenizer = "{source_tokenizer}"
+target_tokenizer = "{target_tokenizer}"
+vocabulary = "{vocabulary}"
+
+[checksums]
+model = "{model_sha256}"
+config = "{config_sha256}"
+source_tokenizer = "{source_tokenizer_sha256}"
+target_tokenizer = "{target_tokenizer_sha256}"
+vocabulary = "{vocabulary_sha256}"
+"#,
+        id = model.id,
+        name = model.name,
+        family = model.family,
+        version = model.version,
+        backend = model.backend,
+        precision = model.quantization.unwrap_or_default(),
+        source_languages = toml_string_array(&model.source_languages),
+        target_languages = toml_string_array(&model.target_languages),
+        low_spec_friendly = model.low_spec_friendly,
+        multilingual = model.multilingual,
+        model_file = model_file,
+        config = config,
+        source_tokenizer = source_tokenizer,
+        target_tokenizer = target_tokenizer,
+        vocabulary = vocabulary,
+        model_sha256 = checksum_for_role(checksums, "model")?,
+        config_sha256 = checksum_for_role(checksums, "config")?,
+        source_tokenizer_sha256 = checksum_for_role(checksums, "source_tokenizer")?,
+        target_tokenizer_sha256 = checksum_for_role(checksums, "target_tokenizer")?,
+        vocabulary_sha256 = checksum_for_role(checksums, "vocabulary")?,
+    );
+
+    write_atomic(&model_dir.join("manifest.toml"), manifest.as_bytes())
+}
+
+fn toml_string_array(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|value| format!("\"{value}\""))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn default_ocr_model_for_source(
     source: &ModelPackageSource,
 ) -> Result<ModelManifest, ModelImportError> {
@@ -240,6 +390,21 @@ fn default_ocr_model_for_source(
             "model_download_source_unsupported",
             format!(
                 "unsupported built-in OCR model source '{}'",
+                source.model_id
+            ),
+        )),
+    }
+}
+
+fn default_translation_model_for_source(
+    source: &ModelPackageSource,
+) -> Result<ModelManifest, ModelImportError> {
+    match source.model_id {
+        "opus-mt-en-zh-ct2-int8" => Ok(default_translation_model()),
+        _ => Err(ModelImportError::new(
+            "model_download_source_unsupported",
+            format!(
+                "unsupported built-in translation model source '{}'",
                 source.model_id
             ),
         )),
@@ -458,7 +623,16 @@ fn replace_tmp_file(tmp_path: &Path, path: &Path) -> Result<(), ModelImportError
 mod tests {
     use std::fs;
 
-    use crate::{ModelSource, ModelStorage, find_builtin_ocr_package_source};
+    use std::collections::BTreeMap;
+
+    use sha2::Digest;
+
+    use crate::{
+        ModelSource, ModelStorage, find_builtin_ocr_package_source,
+        find_builtin_translation_package_source, import_manifest_file,
+    };
+
+    use super::write_builtin_translation_manifest;
 
     #[test]
     #[ignore = "downloads PP-OCRv5 MNN files from the network"]
@@ -478,6 +652,47 @@ mod tests {
         assert!(model_root.join("det.mnn").exists());
         assert!(model_root.join("rec.mnn").exists());
         assert!(model_root.join("ppocr_keys_v5.txt").exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn writes_builtin_translation_manifest() {
+        let root = std::env::temp_dir().join(format!(
+            "snap-pin-translation-download-manifest-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("model.bin"), [1]).unwrap();
+        fs::write(root.join("config.json"), [2]).unwrap();
+        fs::write(root.join("source.spm"), [3]).unwrap();
+        fs::write(root.join("target.spm"), [4]).unwrap();
+        fs::write(root.join("shared_vocabulary.json"), [5]).unwrap();
+
+        let source = find_builtin_translation_package_source("opus-mt-en-zh-ct2-int8").unwrap();
+        let checksums = BTreeMap::from([
+            ("model", format!("{:x}", sha2::Sha256::digest([1]))),
+            ("config", format!("{:x}", sha2::Sha256::digest([2]))),
+            (
+                "source_tokenizer",
+                format!("{:x}", sha2::Sha256::digest([3])),
+            ),
+            (
+                "target_tokenizer",
+                format!("{:x}", sha2::Sha256::digest([4])),
+            ),
+            ("vocabulary", format!("{:x}", sha2::Sha256::digest([5]))),
+        ]);
+
+        write_builtin_translation_manifest(&source, &root, &checksums).unwrap();
+        let manifest = import_manifest_file(root.join("manifest.toml")).unwrap();
+
+        assert_eq!(manifest.id, "opus-mt-en-zh-ct2-int8");
+        assert!(matches!(manifest.source, ModelSource::LocalPath(_)));
+        assert_eq!(manifest.domain, shared_models::ModelDomain::Translation);
+        assert_eq!(manifest.source_languages, vec!["en"]);
+        assert!(manifest.target_languages.contains(&"zh-CN".to_owned()));
+        assert!(manifest.target_languages.contains(&"zh".to_owned()));
 
         let _ = fs::remove_dir_all(root);
     }

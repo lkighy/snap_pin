@@ -188,6 +188,7 @@ pub struct TranslateSettings {
     pub provider: TranslateProvider,
     pub target_language: String,
     pub auto_translate_after_ocr: bool,
+    pub default_model_id: Option<String>,
 }
 
 impl Default for TranslateSettings {
@@ -196,6 +197,7 @@ impl Default for TranslateSettings {
             provider: TranslateProvider::Local(crate::TranslateLocalBackend::CTranslate2),
             target_language: "zh-CN".to_owned(),
             auto_translate_after_ocr: false,
+            default_model_id: None,
         }
     }
 }

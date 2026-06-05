@@ -71,8 +71,12 @@
     {
       "label": "tauri: dev",
       "type": "shell",
-      "command": "cargo",
-      "args": ["run", "-p", "tauri_desktop", "--features", "local-ocr-rs"],
+      "command": "pwsh",
+      "args": [
+        "scripts/check-translate-ct2-windows.ps1",
+        "-CargoCommand",
+        "run -p tauri_desktop --features local-ocr-rs,local-translate-ct2"
+      ],
       "options": {
         "cwd": "${workspaceFolder}",
         "env": {
@@ -85,10 +89,17 @@
     {
       "label": "tauri: release",
       "type": "shell",
-      "command": "cargo",
-      "args": ["run", "--release", "-p", "tauri_desktop"],
+      "command": "pwsh",
+      "args": [
+        "scripts/check-translate-ct2-windows.ps1",
+        "-CargoCommand",
+        "run --release -p tauri_desktop --features local-ocr-rs,local-translate-ct2"
+      ],
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}"
+        }
       },
       "dependsOn": ["ui: build"],
       "problemMatcher": "$rustc"
@@ -96,18 +107,47 @@
     {
       "label": "tauri: mvp cli",
       "type": "shell",
-      "command": "cargo",
-      "args": ["run", "-p", "tauri_desktop", "--", "--mvp-cli"],
+      "command": "pwsh",
+      "args": [
+        "scripts/check-translate-ct2-windows.ps1",
+        "-CargoCommand",
+        "run -p tauri_desktop --features local-ocr-rs,local-translate-ct2 -- --mvp-cli"
+      ],
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}"
+        }
       },
       "problemMatcher": "$rustc"
     },
     {
       "label": "rust: check tauri",
       "type": "shell",
-      "command": "cargo",
-      "args": ["check", "-p", "tauri_desktop"],
+      "command": "pwsh",
+      "args": [
+        "scripts/check-translate-ct2-windows.ps1",
+        "-CargoCommand",
+        "check -p tauri_desktop --features local-ocr-rs,local-translate-ct2"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}"
+        }
+      },
+      "group": "build",
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "translate: check ct2 env",
+      "type": "shell",
+      "command": "pwsh",
+      "args": [
+        "scripts/check-translate-ct2-windows.ps1",
+        "-CargoCommand",
+        "check -p translate_engine --features local-translate-ct2"
+      ],
       "options": {
         "cwd": "${workspaceFolder}"
       },

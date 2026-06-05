@@ -185,6 +185,8 @@ pub struct TranslationSettingsDto {
     pub provider: String,
     pub target_language: String,
     pub auto_translate_after_ocr: bool,
+    #[serde(default)]
+    pub default_model_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,6 +265,11 @@ impl From<&Settings> for AppSettingsDto {
                 provider: translate_provider_name(&settings.translate.provider),
                 target_language: settings.translate.target_language.clone(),
                 auto_translate_after_ocr: settings.translate.auto_translate_after_ocr,
+                default_model_id: settings
+                    .translate
+                    .default_model_id
+                    .clone()
+                    .unwrap_or_default(),
             },
             hotkeys: HotkeySettingsDto {
                 capture: settings.hotkeys.capture.clone(),
@@ -328,6 +335,7 @@ impl From<AppSettingsDto> for Settings {
         settings.translate.provider = parse_translate_provider(&dto.translation.provider);
         settings.translate.target_language = dto.translation.target_language;
         settings.translate.auto_translate_after_ocr = dto.translation.auto_translate_after_ocr;
+        settings.translate.default_model_id = empty_to_none(dto.translation.default_model_id);
 
         settings.hotkeys.capture = dto.hotkeys.capture;
         settings.hotkeys.pin_selection = dto.hotkeys.pin_selection;

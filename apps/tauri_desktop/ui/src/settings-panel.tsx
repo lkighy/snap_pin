@@ -68,25 +68,49 @@ interface SettingsPanelProps {
 const builtinOcrModelPackages = [
   {
     id: "ppocr-v5-mobile-mnn",
+    domain: "OCR",
     name: "PP-OCRv5 Mobile MNN",
     profile: "标准",
     detail: "默认推荐，适合常规截图 OCR。",
   },
   {
     id: "ppocr-v5-mobile-fp16-mnn",
+    domain: "OCR",
     name: "PP-OCRv5 Mobile FP16 MNN",
     profile: "轻量",
     detail: "低配机器优先，体积和运行压力更小。",
   },
   {
     id: "ppocr-v4-mobile-mnn",
+    domain: "OCR",
     name: "PP-OCRv4 Mobile MNN",
     profile: "兼容",
     detail: "用于 v5 模型异常或旧环境回退。",
   },
 ];
 
+const builtinTranslationModelPackages = [
+  {
+    id: "opus-mt-en-zh-ct2-int8",
+    domain: "翻译",
+    name: "OPUS-MT English to Chinese CTranslate2",
+    profile: "英中",
+    detail: "Hugging Face gaudi/opus-mt-en-zh-ctranslate2，约 160 MB。",
+    source: "gaudi/opus-mt-en-zh-ctranslate2",
+  },
+];
+
 const localOcrProviders = new Set(["local-mnn"]);
+const localTranslationProviders = new Set(["local-ct2"]);
+const apiTranslationProviders = new Set([
+  "api-deepl",
+  "api-google",
+  "api-azure",
+  "api-openai",
+  "api-baidu",
+  "api-tencent",
+  "api-custom",
+]);
 const apiOcrProviders = new Set([
   "api-openai",
   "api-azure",
@@ -660,6 +684,53 @@ export function SettingsPanel({
   }
 
   if (activeView === "translation") {
+    const localTranslateRuntimeEnabled =
+      status.localTranslateRuntimeStatus === "local-translate-ct2-enabled";
+    const translationModels = models.filter(
+      (model) => model.domain === "translation",
+    );
+    const readyLocalTranslationModels = translationModels.filter(
+      (model) =>
+        model.source === "local-path" &&
+        model.availability === "ready" &&
+        model.backend === "ctranslate2",
+    );
+    const usingLocalTranslation = localTranslationProviders.has(
+      settings.translation.provider,
+    );
+    const usingApiTranslation = apiTranslationProviders.has(
+      settings.translation.provider,
+    );
+    const autoTranslationModelId =
+      readyLocalTranslationModels.find((model) =>
+        model.id.includes(settings.translation.targetLanguage),
+      )?.id ??
+      readyLocalTranslationModels[0]?.id ??
+      "opus-mt-en-zh-ct2-int8";
+    const selectedTranslationModelId =
+      settings.translation.defaultModelId || autoTranslationModelId;
+    const selectedTranslationModel = translationModels.find(
+      (model) => model.id === selectedTranslationModelId,
+    );
+    const selectedTranslationModelReady = readyLocalTranslationModels.some(
+      (model) => model.id === selectedTranslationModelId,
+    );
+    const autoTranslateDisabled =
+      usingLocalTranslation &&
+      (!localTranslateRuntimeEnabled || !selectedTranslationModelReady);
+    const autoTranslateChecked =
+      settings.translation.autoTranslateAfterOcr && !autoTranslateDisabled;
+    const translationModelOptions = [
+      {
+        value: "auto",
+        label: `${t("model.auto")} (${autoTranslationModelId})`,
+      },
+      ...translationModels.map((model) => ({
+        value: model.id,
+        label: `${model.name} (${model.backend}, ${model.availability})`,
+      })),
+    ];
+
     return (
       <FieldGrid>
         <SelectField
@@ -670,6 +741,13 @@ export function SettingsPanel({
             updateSettings("translation", { provider })
           }
         />
+        {usingApiTranslation ? (
+          <ModelTile
+            label="Translation API"
+            value="External API provider"
+            configuredLabel="scheduled after local CTranslate2 MVP"
+          />
+        ) : null}
         <SelectField
           label={t("field.targetLanguage")}
           value={settings.translation.targetLanguage}
@@ -678,17 +756,73 @@ export function SettingsPanel({
             updateSettings("translation", { targetLanguage })
           }
         />
+        {usingLocalTranslation ? (
+          <SelectField
+            label="Default translation model"
+            value={settings.translation.defaultModelId || "auto"}
+            options={translationModelOptions}
+            onValueChange={(value) => {
+              updateSettings("translation", {
+                defaultModelId: value === "auto" ? "" : value,
+              });
+            }}
+          />
+        ) : null}
         <SwitchField
           label={t("field.translateAfterOcr")}
-          checked={settings.translation.autoTranslateAfterOcr}
+          checked={autoTranslateChecked}
+          disabled={autoTranslateDisabled}
           onCheckedChange={(autoTranslateAfterOcr) =>
             updateSettings("translation", { autoTranslateAfterOcr })
           }
         />
+        {usingLocalTranslation ? (
+          <>
+            <ModelTile
+              label="Local translation runtime"
+              value={status.localTranslateRuntimeStatus}
+              configuredLabel={
+                localTranslateRuntimeEnabled
+                  ? "runtime enabled"
+                  : "rebuild with local-translate-ct2"
+              }
+            />
+            <ModelTile
+              label="Local translation model"
+              value={
+                selectedTranslationModel
+                  ? `${selectedTranslationModel.name} / ${selectedTranslationModel.availability}`
+                  : "缺少本地翻译模型"
+              }
+              configuredLabel={
+                selectedTranslationModelReady
+                  ? "local CTranslate2 model ready"
+                  : "import CTranslate2 model first"
+              }
+            />
+            <Button
+              type="button"
+              variant="outline"
+              className="min-h-[62px] min-w-0 justify-center"
+              onClick={onOpenModels}
+            >
+              <Upload className="size-4" />
+              <span className="truncate">
+                {selectedTranslationModelReady ? "管理翻译模型" : "导入翻译模型"}
+              </span>
+            </Button>
+          </>
+        ) : null}
         <ModelTile
           label={t("model.translationDefault")}
-          value="opus-mt-en-zh-ct2-int8"
-          configuredLabel={t("model.configured")}
+          value={selectedTranslationModelId}
+          configuredLabel={
+            usingLocalTranslation
+              ? selectedTranslationModelReady
+                ? t("model.configured")
+                : "missing local files"
+              : "not available in local-first MVP"
+          }
         />
       </FieldGrid>
     );
@@ -718,6 +852,7 @@ export function SettingsPanel({
           return (
             <DownloadableModelTile
               key={modelPackage.id}
+              domain={modelPackage.domain}
               title={modelPackage.name}
               profile={modelPackage.profile}
               detail={modelPackage.detail}
@@ -734,9 +869,30 @@ export function SettingsPanel({
             />
           );
         })}
+        {builtinTranslationModelPackages.map((modelPackage) => {
+          const model = models.find((item) => item.id === modelPackage.id);
+          const ready = model?.availability === "ready";
+          const runningThisModel =
+            downloadRunning && modelDownloadStatus?.modelId === modelPackage.id;
+
+          return (
+            <DownloadableModelTile
+              key={modelPackage.id}
+              domain={modelPackage.domain}
+              title={modelPackage.name}
+              profile={modelPackage.profile}
+              detail={modelPackage.detail}
+              status={ready ? "ready" : model?.availability ?? "not-downloaded"}
+              source={model?.packageSource ?? modelPackage.source}
+              path={model?.path}
+              disabled={ready || downloadRunning || downloadingOcrModel}
+              running={runningThisModel}
+              onDownload={() => onDownloadOcrModel(modelPackage.id)}
+            />
+          );
+        })}
         <ModelDownloadTile
           status={modelDownloadStatus}
-          runtimeEnabled={status.localOcrRuntimeStatus === "local-ocr-rs-enabled"}
           onCancel={onCancelModelDownload}
         />
         <TextField
@@ -927,7 +1083,7 @@ function ModelStorageTile({
         </div>
       </div>
       <p className="mt-3 break-words text-xs text-muted-foreground">
-        更改位置时，已下载的 OCR 模型会迁移到新目录；下载进行中不能修改。
+        更改位置时，已下载模型会迁移到新目录；下载进行中不能修改。
       </p>
     </div>
   );
@@ -935,11 +1091,9 @@ function ModelStorageTile({
 
 function ModelDownloadTile({
   status,
-  runtimeEnabled,
   onCancel,
 }: {
   status: ModelDownloadStatus | null;
-  runtimeEnabled: boolean;
   onCancel: () => void;
 }) {
   const downloaded = formatBytes(status?.downloadedBytes ?? 0);
@@ -989,9 +1143,7 @@ function ModelDownloadTile({
       <p className="mt-3 break-words text-xs text-muted-foreground">
         {status?.running
           ? `${downloaded} / ${total}${percent ? ` · ${percent}` : ""}`
-          : runtimeEnabled
-            ? "下载成功后会自动注册并设为默认 OCR 模型。"
-            : "当前 runtime 未启用；仍可下载模型，但需使用 local-ocr-rs 构建才能本地识别。"}
+          : "下载成功后会自动注册，并设为对应功能的默认模型。"}
       </p>
       {status?.error ? (
         <p className="mt-2 break-words text-xs text-destructive">{status.error}</p>
@@ -1001,6 +1153,7 @@ function ModelDownloadTile({
 }
 
 function DownloadableModelTile({
+  domain,
   title,
   profile,
   detail,
@@ -1011,6 +1164,7 @@ function DownloadableModelTile({
   running,
   onDownload,
 }: {
+  domain: string;
   title: string;
   profile: string;
   detail: string;
@@ -1028,7 +1182,7 @@ function DownloadableModelTile({
       <div className="flex min-w-0 items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="break-words text-xs font-medium text-muted-foreground">
-            OCR {profile}模型
+            {domain} {profile}模型
           </p>
           <p className="mt-2 break-words text-sm font-semibold">{title}</p>
           <p className="mt-2 break-words text-xs text-muted-foreground">{detail}</p>

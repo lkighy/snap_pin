@@ -5,4 +5,9 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+ct2rs = { version = "0.9.19", default-features = false, features = ["sentencepiece", "ruy"], optional = true }
 shared_models.workspace = true
+
+[features]
+default = []
+local-translate-ct2 = ["dep:ct2rs"]

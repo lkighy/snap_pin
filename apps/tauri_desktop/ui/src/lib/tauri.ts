@@ -5,6 +5,7 @@ export interface AppStatus {
   modelSummary: string;
   historySummary: string;
   localOcrRuntimeStatus: string;
+  localTranslateRuntimeStatus: string;
 }
 
 export interface InterfaceSettings {
@@ -76,6 +77,7 @@ export interface TranslationSettings {
   provider: string;
   targetLanguage: string;
   autoTranslateAfterOcr: boolean;
+  defaultModelId: string;
 }
 
 export interface HotkeySettings {

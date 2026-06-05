@@ -17,6 +17,7 @@ use platform_win32::{
 use serde::{Deserialize, Serialize};
 use shared_models::{
     CaptureCompletionAction, OcrExternalProvider, OcrLocalBackend, OcrProvider, Settings,
+    TranslateExternalProvider, TranslateLocalBackend, TranslateProvider,
 };
 use tauri::{AppHandle, Manager};
 
@@ -68,6 +69,9 @@ struct PinWindowLaunch<'a> {
     ocr_language_hint: Option<&'a str>,
     ocr_default_model_id: Option<&'a str>,
     ocr_models_registry: Option<&'a str>,
+    translate_provider: &'a str,
+    translate_target_language: &'a str,
+    translate_default_model_id: Option<&'a str>,
     ocr_text_font_height_ratio: f32,
     ocr_text_min_font_size: f32,
     ocr_text_max_font_size: f32,
@@ -436,6 +440,8 @@ fn pin_clipboard_content(app: &AppHandle) -> Result<(), String> {
     let payload = platform_win32::read_clipboard_payload()
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
     let image = clipboard_payload_to_pin_image(app, payload)?;
+    let ocr_provider = ocr_provider_name(&settings.ocr.provider);
+    let translate_provider = translate_provider_name(&settings.translate.provider);
 
     spawn_pin_window_from_desktop(
         app,
@@ -451,10 +457,13 @@ fn pin_clipboard_content(app: &AppHandle) -> Result<(), String> {
             min_height: settings.pin.min_height,
             always_on_top: settings.pin.always_on_top,
             language: &settings.interface.language,
-            ocr_provider: &ocr_provider_name(&settings.ocr.provider),
+            ocr_provider: &ocr_provider,
             ocr_language_hint: settings.ocr.language_hint.as_deref(),
             ocr_default_model_id: settings.ocr.default_model_id.as_deref(),
             ocr_models_registry: model_registry_path.as_deref(),
+            translate_provider: &translate_provider,
+            translate_target_language: &settings.translate.target_language,
+            translate_default_model_id: settings.translate.default_model_id.as_deref(),
             ocr_text_font_height_ratio: settings.pin.ocr_text.font_height_ratio,
             ocr_text_min_font_size: settings.pin.ocr_text.min_font_size,
             ocr_text_max_font_size: settings.pin.ocr_text.max_font_size,
@@ -682,6 +691,12 @@ fn spawn_pin_window_from_desktop(
         launch.ocr_default_model_id.unwrap_or("").to_owned(),
         "--ocr-models-registry".to_owned(),
         launch.ocr_models_registry.unwrap_or("").to_owned(),
+        "--translate-provider".to_owned(),
+        launch.translate_provider.to_owned(),
+        "--translate-target-language".to_owned(),
+        launch.translate_target_language.to_owned(),
+        "--translate-default-model-id".to_owned(),
+        launch.translate_default_model_id.unwrap_or("").to_owned(),
         "--ocr-text-font-height-ratio".to_owned(),
         launch.ocr_text_font_height_ratio.to_string(),
         "--ocr-text-min-font-size".to_owned(),
@@ -770,6 +785,16 @@ fn resident_overlay_args(settings: &Settings, model_registry_path: Option<&str>)
         settings.ocr.default_model_id.clone().unwrap_or_default(),
         "--ocr-models-registry".to_owned(),
         model_registry_path.unwrap_or("").to_owned(),
+        "--translate-provider".to_owned(),
+        translate_provider_name(&settings.translate.provider),
+        "--translate-target-language".to_owned(),
+        settings.translate.target_language.clone(),
+        "--translate-default-model-id".to_owned(),
+        settings
+            .translate
+            .default_model_id
+            .clone()
+            .unwrap_or_default(),
         "--ocr-text-font-height-ratio".to_owned(),
         settings.pin.ocr_text.font_height_ratio.to_string(),
         "--ocr-text-min-font-size".to_owned(),
@@ -811,6 +836,9 @@ struct OverlayCaptureCommand {
     ocr_language_hint: Option<String>,
     ocr_default_model_id: Option<String>,
     ocr_models_registry: Option<String>,
+    translate_provider: String,
+    translate_target_language: String,
+    translate_default_model_id: Option<String>,
     ocr_text_font_height_ratio: f32,
     ocr_text_min_font_size: f32,
     ocr_text_max_font_size: f32,
@@ -856,6 +884,9 @@ impl OverlayCaptureCommand {
             ocr_language_hint: settings.ocr.language_hint.clone(),
             ocr_default_model_id: settings.ocr.default_model_id.clone(),
             ocr_models_registry: None,
+            translate_provider: translate_provider_name(&settings.translate.provider),
+            translate_target_language: settings.translate.target_language.clone(),
+            translate_default_model_id: settings.translate.default_model_id.clone(),
             ocr_text_font_height_ratio: settings.pin.ocr_text.font_height_ratio,
             ocr_text_min_font_size: settings.pin.ocr_text.min_font_size,
             ocr_text_max_font_size: settings.pin.ocr_text.max_font_size,
@@ -886,6 +917,25 @@ fn ocr_provider_name(provider: &OcrProvider) -> String {
         OcrProvider::ExternalApi(OcrExternalProvider::BaiduOcr) => "api-baidu",
         OcrProvider::ExternalApi(OcrExternalProvider::TencentOcr) => "api-tencent",
         OcrProvider::ExternalApi(OcrExternalProvider::Custom(_)) => "api-custom",
+    }
+    .to_owned()
+}
+
+fn translate_provider_name(provider: &TranslateProvider) -> String {
+    match provider {
+        TranslateProvider::Disabled => "disabled",
+        TranslateProvider::Local(TranslateLocalBackend::CTranslate2) => "local-ct2",
+        TranslateProvider::Local(TranslateLocalBackend::Custom(_)) => "local-custom",
+        TranslateProvider::ExternalApi(TranslateExternalProvider::DeepL) => "api-deepl",
+        TranslateProvider::ExternalApi(TranslateExternalProvider::Google) => "api-google",
+        TranslateProvider::ExternalApi(TranslateExternalProvider::Azure) => "api-azure",
+        TranslateProvider::ExternalApi(TranslateExternalProvider::OpenAi) => "api-openai",
+        TranslateProvider::ExternalApi(TranslateExternalProvider::Baidu) => "api-baidu",
+        TranslateProvider::ExternalApi(TranslateExternalProvider::Tencent) => "api-tencent",
+        TranslateProvider::ExternalApi(TranslateExternalProvider::CustomHttp) => "api-custom",
+        TranslateProvider::ExternalApi(TranslateExternalProvider::Custom(_)) => "api-custom",
+        TranslateProvider::Experimental(_) => "experimental",
+        TranslateProvider::Custom(_) => "custom",
     }
     .to_owned()
 }
