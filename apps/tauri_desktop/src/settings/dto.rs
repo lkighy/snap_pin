@@ -184,9 +184,15 @@ fn default_ocr_timeout_ms() -> u64 {
 pub struct TranslationSettingsDto {
     pub provider: String,
     pub target_language: String,
+    #[serde(default = "default_translation_segmentation_mode")]
+    pub segmentation_mode: String,
     pub auto_translate_after_ocr: bool,
     #[serde(default)]
     pub default_model_id: String,
+}
+
+fn default_translation_segmentation_mode() -> String {
+    "smart-merge".to_owned()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,6 +270,7 @@ impl From<&Settings> for AppSettingsDto {
             translation: TranslationSettingsDto {
                 provider: translate_provider_name(&settings.translate.provider),
                 target_language: settings.translate.target_language.clone(),
+                segmentation_mode: settings.translate.segmentation_mode.clone(),
                 auto_translate_after_ocr: settings.translate.auto_translate_after_ocr,
                 default_model_id: settings
                     .translate
@@ -334,6 +341,8 @@ impl From<AppSettingsDto> for Settings {
 
         settings.translate.provider = parse_translate_provider(&dto.translation.provider);
         settings.translate.target_language = dto.translation.target_language;
+        settings.translate.segmentation_mode =
+            normalize_translation_segmentation_mode(&dto.translation.segmentation_mode);
         settings.translate.auto_translate_after_ocr = dto.translation.auto_translate_after_ocr;
         settings.translate.default_model_id = empty_to_none(dto.translation.default_model_id);
 
@@ -565,5 +574,12 @@ fn parse_translate_provider(value: &str) -> TranslateProvider {
             TranslateProvider::Experimental(shared_models::TranslateExperimentalBackend::Candle)
         }
         _ => TranslateProvider::Local(TranslateLocalBackend::CTranslate2),
+    }
+}
+
+fn normalize_translation_segmentation_mode(value: &str) -> String {
+    match value {
+        "block-replace" | "full-region" => value.to_owned(),
+        _ => default_translation_segmentation_mode(),
     }
 }

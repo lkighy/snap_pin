@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use model_registry::ModelRegistry;
 use shared_models::{
-    LanguageCode, ModelManifest, TranslateExternalProvider, TranslateLocalBackend,
+    LanguageCode, ModelManifest, Rect, TranslateExternalProvider, TranslateLocalBackend,
     TranslateProvider, TranslationRequest,
 };
 use translate_engine::{RoutedTranslateEngine, TranslateEngine};
@@ -17,6 +17,8 @@ pub(crate) struct PinBlockTranslateRequest {
 
 pub(crate) struct PinTranslatableBlock {
     pub(crate) index: usize,
+    pub(crate) block_indices: Vec<usize>,
+    pub(crate) bounds: Rect,
     pub(crate) text: String,
     pub(crate) source_language: Option<String>,
 }
@@ -24,6 +26,7 @@ pub(crate) struct PinTranslatableBlock {
 #[derive(Debug, Clone)]
 pub(crate) struct PinBlockTranslation {
     pub(crate) index: usize,
+    pub(crate) block_indices: Vec<usize>,
     pub(crate) source_text: String,
     pub(crate) translated_text: String,
     pub(crate) target_language: String,
@@ -80,6 +83,7 @@ pub(crate) fn translate_pin_blocks(
             .map_err(|error| error.message)?;
         translations.push(PinBlockTranslation {
             index: block.index,
+            block_indices: block.block_indices,
             source_text: result.source_text,
             translated_text: result.translated_text,
             target_language: result.target_language.0,

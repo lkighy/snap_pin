@@ -187,6 +187,7 @@ impl Default for OcrSettings {
 pub struct TranslateSettings {
     pub provider: TranslateProvider,
     pub target_language: String,
+    pub segmentation_mode: String,
     pub auto_translate_after_ocr: bool,
     pub default_model_id: Option<String>,
 }
@@ -196,6 +197,7 @@ impl Default for TranslateSettings {
         Self {
             provider: TranslateProvider::Local(crate::TranslateLocalBackend::CTranslate2),
             target_language: "zh-CN".to_owned(),
+            segmentation_mode: "smart-merge".to_owned(),
             auto_translate_after_ocr: false,
             default_model_id: None,
         }

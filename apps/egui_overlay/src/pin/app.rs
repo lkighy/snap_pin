@@ -9,7 +9,9 @@ use eframe::egui::{
 };
 use eframe::{App, CreationContext, Frame};
 use image::DynamicImage;
-use shared_models::{OcrProvider, OcrResult, Size, TextOverlay, TranslateProvider};
+use shared_models::{
+    OcrProvider, OcrResult, OcrTextBlock, Point, Rect, Size, TextOverlay, TranslateProvider,
+};
 
 use crate::capture::hotkeys::{command_shift_shortcut_pressed, copy_shortcut_pressed};
 use crate::capture::paint::{draw_error, draw_pin_border};
@@ -55,6 +57,7 @@ pub(crate) struct PinWindowApp {
     selected_ocr_block: Option<usize>,
     translate_provider: TranslateProvider,
     translate_target_language: String,
+    translate_segmentation_mode: PinTranslationSegmentationMode,
     translate_default_model_id: Option<String>,
     translate_receiver: Option<mpsc::Receiver<Result<Vec<PinBlockTranslation>, String>>>,
     block_translations: Vec<PinBlockTranslation>,
@@ -90,6 +93,9 @@ impl PinWindowApp {
             selected_ocr_block: None,
             translate_provider: parse_translate_provider(&args.translate_provider),
             translate_target_language: args.translate_target_language,
+            translate_segmentation_mode: PinTranslationSegmentationMode::from_name(
+                &args.translate_segmentation_mode,
+            ),
             translate_default_model_id: args.translate_default_model_id,
             translate_receiver: None,
             block_translations: Vec::new(),
@@ -194,15 +200,6 @@ impl PinWindowApp {
         viewport_rect: Option<EguiRect>,
         pointer_pos: Option<Pos2>,
     ) {
-        if self.toolbar_edge.is_some() {
-            let canvas = EguiRect::from_min_size(
-                Pos2::ZERO,
-                viewport_rect.map_or(self.image_display_size, |rect| rect.size()),
-            );
-            self.hide_toolbar(ctx, canvas);
-            return;
-        }
-
         let Some(viewport_rect) = viewport_rect else {
             return;
         };
@@ -221,20 +218,36 @@ impl PinWindowApp {
             return;
         }
 
-        let image_rect = self.image_rect(EguiRect::from_min_size(Pos2::ZERO, viewport_rect.size()));
+        let canvas = EguiRect::from_min_size(Pos2::ZERO, viewport_rect.size());
+        let image_rect = self.image_rect(canvas);
         let anchor = pointer_pos.unwrap_or(image_rect.center());
         let anchor_fraction = Vec2::new(
             ((anchor.x - image_rect.min.x) / current_size.x).clamp(0.0, 1.0),
             ((anchor.y - image_rect.min.y) / current_size.y).clamp(0.0, 1.0),
         );
-        let offset = Vec2::new(
-            (current_size.x - new_size.x) * anchor_fraction.x,
-            (current_size.y - new_size.y) * anchor_fraction.y,
+
+        let state = self.toolbar_state();
+        let new_window_size = pin_window_size_for_image(new_size, self.toolbar_edge, state);
+        let new_canvas = EguiRect::from_min_size(Pos2::ZERO, new_window_size);
+        let new_image_rect = pin_image_rect(new_canvas, new_size, self.toolbar_edge, state);
+        let current_anchor = image_rect.min + current_size * anchor_fraction;
+        let new_anchor = new_image_rect.min + new_size * anchor_fraction;
+        let new_window_min = viewport_rect.min + current_anchor.to_vec2() - new_anchor.to_vec2();
+
+        log::info!(
+            "pin zoom toolbar_edge={:?} image_size={}x{} new_image_size={}x{} window_size={}x{}",
+            self.toolbar_edge,
+            current_size.x,
+            current_size.y,
+            new_size.x,
+            new_size.y,
+            new_window_size.x,
+            new_window_size.y
         );
 
         self.image_display_size = new_size;
-        ctx.send_viewport_cmd(ViewportCommand::OuterPosition(viewport_rect.min + offset));
-        ctx.send_viewport_cmd(ViewportCommand::InnerSize(new_size));
+        ctx.send_viewport_cmd(ViewportCommand::OuterPosition(new_window_min));
+        ctx.send_viewport_cmd(ViewportCommand::InnerSize(new_window_size));
         ctx.request_repaint();
     }
 
@@ -258,7 +271,7 @@ impl PinWindowApp {
         }
 
         if let Some(action) = self.clicked_toolbar_action(ctx, canvas, image_rect) {
-            self.run_toolbar_action(ctx, canvas, action);
+            self.run_toolbar_action(ctx, action);
             return;
         }
 
@@ -281,14 +294,12 @@ impl PinWindowApp {
         if response.clicked_by(PointerButton::Primary) && pointer_over_ocr {
             self.selected_ocr_block =
                 pointer_pos.and_then(|position| self.ocr_block_at(position, image_rect));
-            self.hide_toolbar(ctx, canvas);
             ctx.request_repaint();
             return;
         }
 
         if response.clicked_by(PointerButton::Primary) && !pointer_over_toolbar {
             self.selected_ocr_block = None;
-            self.hide_toolbar(ctx, canvas);
         }
 
         if response.dragged_by(PointerButton::Primary) && !pointer_over_toolbar && !pointer_over_ocr
@@ -316,7 +327,7 @@ impl PinWindowApp {
         )
     }
 
-    fn run_toolbar_action(&mut self, ctx: &Context, canvas: EguiRect, action: PinToolbarAction) {
+    fn run_toolbar_action(&mut self, ctx: &Context, action: PinToolbarAction) {
         self.pending_toolbar_action = Some(action);
 
         match action {
@@ -336,17 +347,6 @@ impl PinWindowApp {
             }
         }
 
-        if !matches!(
-            action,
-            PinToolbarAction::Close
-                | PinToolbarAction::CopySelectedText
-                | PinToolbarAction::CopyAllText
-                | PinToolbarAction::RunOcr
-                | PinToolbarAction::Translate
-                | PinToolbarAction::CloseOcr
-        ) {
-            self.hide_toolbar(ctx, canvas);
-        }
         ctx.request_repaint();
     }
 
@@ -465,16 +465,31 @@ impl PinWindowApp {
 
         let image_size = Size::new(self.image_size.x.max(1.0), self.image_size.y.max(1.0));
         for (index, block) in result.blocks.iter().enumerate() {
-            let translation = self.block_translation(index);
+            let translation = self.translation_for_block(index);
+            let should_draw_translation = translation.is_some_and(|translation| {
+                self.translation_display_block_index(translation) == Some(index)
+            });
+            if translation.is_some() && !should_draw_translation {
+                continue;
+            }
+
             let overlay = TextOverlay {
-                text: translation
-                    .map(|translation| translation.translated_text.clone())
-                    .unwrap_or_else(|| block.text.clone()),
-                language: translation
-                    .map(|translation| translation.target_language.clone())
-                    .or_else(|| block.language.clone()),
+                text: if should_draw_translation {
+                    translation
+                        .map(|translation| translation.translated_text.clone())
+                        .unwrap_or_else(|| block.text.clone())
+                } else {
+                    block.text.clone()
+                },
+                language: if should_draw_translation {
+                    translation
+                        .map(|translation| translation.target_language.clone())
+                        .or_else(|| block.language.clone())
+                } else {
+                    block.language.clone()
+                },
                 bounds: block.bounds,
-                role: if translation.is_some() {
+                role: if should_draw_translation {
                     shared_models::TextOverlayRole::Translation
                 } else {
                     shared_models::TextOverlayRole::Ocr
@@ -488,8 +503,17 @@ impl PinWindowApp {
                 &overlay,
                 self.ocr_text_style,
                 self.selected_ocr_block == Some(index),
+                ocr_text_right_limit_x(result, index, image_rect, image_size),
             );
         }
+    }
+
+    fn translation_display_block_index(&self, translation: &PinBlockTranslation) -> Option<usize> {
+        if self.uses_block_replacement() {
+            return Some(translation.index);
+        }
+
+        translation.block_indices.first().copied()
     }
 
     fn run_ocr_for_pin(&mut self, ctx: &Context) {
@@ -537,17 +561,7 @@ impl PinWindowApp {
             self.ocr_status = Some("OCR running before translation...".to_owned());
             return;
         };
-        let blocks = result
-            .blocks
-            .iter()
-            .enumerate()
-            .filter(|(_, block)| !block.text.trim().is_empty())
-            .map(|(index, block)| PinTranslatableBlock {
-                index,
-                text: block.text.clone(),
-                source_language: block.language.clone(),
-            })
-            .collect::<Vec<_>>();
+        let blocks = self.translatable_blocks_for_result(result);
         if blocks.is_empty() {
             self.translate_after_ocr = true;
             self.run_ocr_for_pin(ctx);
@@ -641,7 +655,7 @@ impl PinWindowApp {
                     .map(|translation| translation.translated_text.chars().count())
                     .sum::<usize>();
                 log::info!(
-                    "pin block translation completed blocks={} translated_chars={}",
+                    "pin translation completed units={} translated_chars={}",
                     translations.len(),
                     translated_chars
                 );
@@ -699,7 +713,7 @@ impl PinWindowApp {
     fn selected_ocr_text(&self) -> Option<String> {
         let result = self.ocr_result.as_ref()?;
         if let Some(index) = self.selected_ocr_block {
-            if let Some(translation) = self.block_translation(index) {
+            if let Some(translation) = self.translation_for_block(index) {
                 let text = translation.translated_text.trim();
                 if !text.is_empty() {
                     return Some(text.to_owned());
@@ -737,6 +751,34 @@ impl PinWindowApp {
         self.block_translations
             .iter()
             .find(|translation| translation.index == index)
+    }
+
+    fn translation_for_block(&self, index: usize) -> Option<&PinBlockTranslation> {
+        if self.uses_block_replacement() {
+            return self.block_translation(index);
+        }
+
+        self.block_translations
+            .iter()
+            .find(|translation| translation.block_indices.contains(&index))
+    }
+
+    fn uses_block_replacement(&self) -> bool {
+        self.translate_segmentation_mode == PinTranslationSegmentationMode::BlockReplace
+    }
+
+    fn translatable_blocks_for_result(&self, result: &OcrResult) -> Vec<PinTranslatableBlock> {
+        match self.translate_segmentation_mode {
+            PinTranslationSegmentationMode::BlockReplace => {
+                translatable_blocks_by_ocr_block(result)
+            }
+            PinTranslationSegmentationMode::SmartMerge => {
+                translatable_blocks_by_smart_merge(result)
+            }
+            PinTranslationSegmentationMode::FullRegion => {
+                translatable_blocks_by_full_region(result)
+            }
+        }
     }
 
     fn copy_selected_ocr_text_or_image(&mut self) {
@@ -861,6 +903,262 @@ impl PinWindowApp {
             }
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinTranslationSegmentationMode {
+    SmartMerge,
+    BlockReplace,
+    FullRegion,
+}
+
+impl PinTranslationSegmentationMode {
+    fn from_name(value: &str) -> Self {
+        match value {
+            "block-replace" => Self::BlockReplace,
+            "full-region" => Self::FullRegion,
+            _ => Self::SmartMerge,
+        }
+    }
+}
+
+fn translatable_blocks_by_ocr_block(result: &OcrResult) -> Vec<PinTranslatableBlock> {
+    result
+        .blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, block)| !block.text.trim().is_empty())
+        .map(|(index, block)| PinTranslatableBlock {
+            index,
+            block_indices: vec![index],
+            bounds: block.bounds,
+            text: block.text.clone(),
+            source_language: block.language.clone(),
+        })
+        .collect()
+}
+
+fn translatable_blocks_by_full_region(result: &OcrResult) -> Vec<PinTranslatableBlock> {
+    let blocks = result
+        .blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, block)| !block.text.trim().is_empty())
+        .collect::<Vec<_>>();
+    if blocks.is_empty() {
+        return Vec::new();
+    }
+
+    vec![translatable_block_from_group(0, &blocks)]
+}
+
+fn translatable_blocks_by_smart_merge(result: &OcrResult) -> Vec<PinTranslatableBlock> {
+    let mut units = Vec::new();
+    let mut group: Vec<(usize, &OcrTextBlock)> = Vec::new();
+
+    for (index, block) in result.blocks.iter().enumerate() {
+        if block.text.trim().is_empty() {
+            continue;
+        }
+
+        let should_start_new = group
+            .last()
+            .is_some_and(|(_, previous)| !should_merge_ocr_blocks(previous, block));
+        if should_start_new {
+            units.push(translatable_block_from_group(units.len(), &group));
+            group.clear();
+        }
+        group.push((index, block));
+    }
+
+    if !group.is_empty() {
+        units.push(translatable_block_from_group(units.len(), &group));
+    }
+
+    units
+}
+
+fn translatable_block_from_group(
+    index: usize,
+    group: &[(usize, &OcrTextBlock)],
+) -> PinTranslatableBlock {
+    let first = group
+        .first()
+        .expect("translation group should contain at least one OCR block");
+    let bounds = group
+        .iter()
+        .skip(1)
+        .fold(first.1.bounds, |bounds, (_, block)| {
+            union_rect(bounds, block.bounds)
+        });
+    let text = group.iter().fold(String::new(), |mut text, (_, block)| {
+        append_ocr_fragment(&mut text, block.text.trim());
+        text
+    });
+    let source_language = group.iter().find_map(|(_, block)| block.language.clone());
+
+    PinTranslatableBlock {
+        index,
+        block_indices: group.iter().map(|(block_index, _)| *block_index).collect(),
+        bounds,
+        text,
+        source_language,
+    }
+}
+
+fn should_merge_ocr_blocks(previous: &OcrTextBlock, next: &OcrTextBlock) -> bool {
+    let previous_text = previous.text.trim();
+    let next_text = next.text.trim();
+    if previous_text.is_empty() || next_text.is_empty() || ends_sentence(previous_text) {
+        return false;
+    }
+
+    let previous_bounds = previous.bounds;
+    let next_bounds = next.bounds;
+    let line_height = previous_bounds
+        .size
+        .height
+        .max(next_bounds.size.height)
+        .max(1.0);
+    let vertical_gap = next_bounds.origin.y - previous_bounds.max_y();
+    let same_line = vertical_gap.abs() <= line_height * 0.55
+        && vertical_overlap_ratio(previous_bounds, next_bounds) >= 0.35
+        && next_bounds.origin.x >= previous_bounds.origin.x - line_height;
+    if same_line {
+        return true;
+    }
+
+    if vertical_gap < -line_height * 0.25 || vertical_gap > line_height * 1.25 {
+        return false;
+    }
+
+    let left_delta = (next_bounds.origin.x - previous_bounds.origin.x).abs();
+    let wrapped_line =
+        left_delta <= line_height * 3.0 || next_bounds.origin.x <= previous_bounds.max_x();
+    wrapped_line && next_bounds.size.width >= line_height
+}
+
+fn append_ocr_fragment(text: &mut String, fragment: &str) {
+    if fragment.is_empty() {
+        return;
+    }
+    if text.is_empty() {
+        text.push_str(fragment);
+        return;
+    }
+
+    if text.ends_with('-')
+        && fragment
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_alphabetic())
+    {
+        text.pop();
+        text.push_str(fragment);
+    } else if should_insert_space(text, fragment) {
+        text.push(' ');
+        text.push_str(fragment);
+    } else {
+        text.push_str(fragment);
+    }
+}
+
+fn should_insert_space(left: &str, right: &str) -> bool {
+    let Some(left_char) = left.chars().last() else {
+        return false;
+    };
+    let Some(right_char) = right.chars().next() else {
+        return false;
+    };
+
+    (left_char.is_ascii_alphanumeric() || left_char == ')' || left_char == ']')
+        && (right_char.is_ascii_alphanumeric() || right_char == '(' || right_char == '[')
+}
+
+fn ends_sentence(text: &str) -> bool {
+    text.chars()
+        .rev()
+        .find(|ch| !ch.is_whitespace())
+        .is_some_and(|ch| {
+            matches!(
+                ch,
+                '.' | '!' | '?' | ';' | ':' | '。' | '！' | '？' | '；' | '：'
+            )
+        })
+}
+
+fn union_rect(a: Rect, b: Rect) -> Rect {
+    let min_x = a.origin.x.min(b.origin.x);
+    let min_y = a.origin.y.min(b.origin.y);
+    let max_x = a.max_x().max(b.max_x());
+    let max_y = a.max_y().max(b.max_y());
+    Rect::new(
+        Point::new(min_x, min_y),
+        Size::new((max_x - min_x).max(0.0), (max_y - min_y).max(0.0)),
+    )
+}
+
+fn vertical_overlap_ratio(a: Rect, b: Rect) -> f32 {
+    let overlap = a.max_y().min(b.max_y()) - a.origin.y.max(b.origin.y);
+    if overlap <= 0.0 {
+        return 0.0;
+    }
+    overlap / a.size.height.min(b.size.height).max(1.0)
+}
+
+fn ocr_text_right_limit_x(
+    result: &OcrResult,
+    block_index: usize,
+    image_rect: EguiRect,
+    image_size: Size,
+) -> f32 {
+    let Some(block) = result.blocks.get(block_index) else {
+        return image_rect.max.x;
+    };
+    let block_rect = ocr_bounds_to_screen_rect(image_rect, image_size, block.bounds);
+
+    result
+        .blocks
+        .iter()
+        .enumerate()
+        .filter(|(index, other)| {
+            *index != block_index
+                && !other.text.trim().is_empty()
+                && ocr_bounds_to_screen_rect(image_rect, image_size, other.bounds).left()
+                    >= block_rect.right() - 1.0
+        })
+        .filter_map(|(_, other)| {
+            let other_rect = ocr_bounds_to_screen_rect(image_rect, image_size, other.bounds);
+            (screen_vertical_overlap_ratio(block_rect, other_rect) >= 0.25)
+                .then_some(other_rect.left())
+        })
+        .fold(image_rect.max.x, f32::min)
+        .clamp(block_rect.left() + 1.0, image_rect.max.x)
+}
+
+fn ocr_bounds_to_screen_rect(image_rect: EguiRect, image_size: Size, bounds: Rect) -> EguiRect {
+    let scale_x = image_rect.width() / image_size.width.max(1.0);
+    let scale_y = image_rect.height() / image_size.height.max(1.0);
+    EguiRect::from_min_size(
+        Pos2::new(
+            image_rect.min.x + bounds.origin.x * scale_x,
+            image_rect.min.y + bounds.origin.y * scale_y,
+        ),
+        Vec2::new(
+            bounds.size.width.max(1.0) * scale_x,
+            bounds.size.height.max(1.0) * scale_y,
+        ),
+    )
+    .intersect(image_rect)
+}
+
+fn screen_vertical_overlap_ratio(a: EguiRect, b: EguiRect) -> f32 {
+    let overlap = a.max.y.min(b.max.y) - a.min.y.max(b.min.y);
+    if overlap <= 0.0 {
+        return 0.0;
+    }
+
+    overlap / a.height().min(b.height()).max(1.0)
 }
 
 impl App for PinWindowApp {

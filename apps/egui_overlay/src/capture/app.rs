@@ -65,6 +65,7 @@ pub(crate) struct CaptureOverlayApp {
     ocr_models_registry: Option<PathBuf>,
     translate_provider: String,
     translate_target_language: String,
+    translate_segmentation_mode: String,
     translate_default_model_id: Option<String>,
     ocr_text_font_height_ratio: f32,
     ocr_text_min_font_size: f32,
@@ -133,6 +134,7 @@ impl CaptureOverlayApp {
             ocr_models_registry: args.ocr_models_registry,
             translate_provider: args.translate_provider,
             translate_target_language: args.translate_target_language,
+            translate_segmentation_mode: args.translate_segmentation_mode,
             translate_default_model_id: args.translate_default_model_id,
             ocr_text_font_height_ratio: args.ocr_text_font_height_ratio,
             ocr_text_min_font_size: args.ocr_text_min_font_size,
@@ -588,6 +590,7 @@ impl CaptureOverlayApp {
             ocr_models_registry: self.ocr_models_registry.as_deref(),
             translate_provider: &self.translate_provider,
             translate_target_language: &self.translate_target_language,
+            translate_segmentation_mode: &self.translate_segmentation_mode,
             translate_default_model_id: self.translate_default_model_id.as_deref(),
             ocr_text_font_height_ratio: self.ocr_text_font_height_ratio,
             ocr_text_min_font_size: self.ocr_text_min_font_size,
@@ -745,6 +748,7 @@ impl CaptureOverlayApp {
         });
         self.translate_provider = command.translate_provider;
         self.translate_target_language = command.translate_target_language;
+        self.translate_segmentation_mode = command.translate_segmentation_mode;
         self.translate_default_model_id = empty_to_none(command.translate_default_model_id);
         self.ocr_text_font_height_ratio = command.ocr_text_font_height_ratio.clamp(0.1, 2.0);
         self.ocr_text_min_font_size = command.ocr_text_min_font_size.clamp(4.0, 96.0);

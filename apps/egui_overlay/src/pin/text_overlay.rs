@@ -5,6 +5,8 @@ use eframe::egui::{
 };
 use shared_models::{Rect, Size, TextOverlay};
 
+const TEXT_MEASURE_WRAP_WIDTH: f32 = 1_000_000.0;
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OcrTextOverlayStyle {
     pub(crate) font_height_ratio: f32,
@@ -60,6 +62,7 @@ pub(crate) fn draw_text_overlay(
     overlay: &TextOverlay,
     style: OcrTextOverlayStyle,
     selected: bool,
+    right_limit_x: f32,
 ) {
     let text = text_overlay_display_text(&overlay.text);
     if text.is_empty() {
@@ -68,8 +71,15 @@ pub(crate) fn draw_text_overlay(
 
     let bounds_rect = text_overlay_bounds_rect(image_rect, image_size, overlay);
     let font_size = text_overlay_font_size(bounds_rect, style);
-    let label_rect =
-        text_overlay_label_rect(painter, image_rect, bounds_rect, &text, font_size, style);
+    let label_rect = text_overlay_label_rect(
+        painter,
+        image_rect,
+        bounds_rect,
+        &text,
+        font_size,
+        style,
+        right_limit_x,
+    );
     let padding = Vec2::new(style.padding_x, style.padding_y);
     let galley = painter.layout(
         text.to_string(),
@@ -115,23 +125,38 @@ fn text_overlay_label_rect(
     text: &str,
     font_size: f32,
     style: OcrTextOverlayStyle,
+    right_limit_x: f32,
 ) -> EguiRect {
+    let padding = Vec2::new(style.padding_x, style.padding_y);
+    let mut label_min = bounds_rect.left_top();
+    label_min.x = label_min.x.clamp(
+        image_rect.min.x,
+        (image_rect.max.x - 1.0).max(image_rect.min.x),
+    );
+
+    let right_limit_x = if right_limit_x.is_finite() {
+        right_limit_x
+    } else {
+        image_rect.max.x
+    };
+    let right_limit_x = right_limit_x.min(image_rect.max.x).max(label_min.x + 1.0);
+    let available_width = (right_limit_x - label_min.x).max(1.0);
+    let unwrapped_galley = painter.layout(
+        text.to_owned(),
+        FontId::proportional(font_size),
+        Color32::WHITE,
+        TEXT_MEASURE_WRAP_WIDTH,
+    );
+    let desired_width = unwrapped_galley.size().x + padding.x * 2.0;
+    let label_width = desired_width.min(available_width).max(1.0);
+    let content_width = (label_width - padding.x * 2.0).max(1.0);
     let galley = painter.layout(
         text.to_owned(),
         FontId::proportional(font_size),
         Color32::WHITE,
-        bounds_rect.width().max(80.0),
+        content_width,
     );
-    let padding = Vec2::new(style.padding_x, style.padding_y);
-    let label_size = Vec2::new(
-        (galley.size().x + padding.x * 2.0).min(image_rect.width().max(1.0)),
-        galley.size().y + padding.y * 2.0,
-    );
-    let mut label_min = bounds_rect.left_top();
-    label_min.x = label_min.x.clamp(
-        image_rect.min.x,
-        (image_rect.max.x - label_size.x).max(image_rect.min.x),
-    );
+    let label_size = Vec2::new(label_width, galley.size().y + padding.y * 2.0);
     label_min.y = label_min.y.clamp(
         image_rect.min.y,
         (image_rect.max.y - label_size.y).max(image_rect.min.y),

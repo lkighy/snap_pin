@@ -76,6 +76,7 @@ export interface OcrProviderProfile {
 export interface TranslationSettings {
   provider: string;
   targetLanguage: string;
+  segmentationMode: string;
   autoTranslateAfterOcr: boolean;
   defaultModelId: string;
 }

@@ -21,6 +21,7 @@ import {
   completionActions,
   ocrProviders,
   targetLanguages,
+  translationSegmentationModes,
   translationProviders,
   ViewId,
 } from "@/app-data";
@@ -754,6 +755,14 @@ export function SettingsPanel({
           options={targetLanguages}
           onValueChange={(targetLanguage) =>
             updateSettings("translation", { targetLanguage })
+          }
+        />
+        <SelectField
+          label={t("field.translationSegmentation")}
+          value={settings.translation.segmentationMode || "smart-merge"}
+          options={localizedOptions(translationSegmentationModes, t)}
+          onValueChange={(segmentationMode) =>
+            updateSettings("translation", { segmentationMode })
           }
         />
         {usingLocalTranslation ? (

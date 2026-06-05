@@ -74,6 +74,12 @@ export const targetLanguages = [
   { value: "de", label: "de" },
 ];
 
+export const translationSegmentationModes = [
+  { value: "smart-merge", labelKey: "translationSegmentation.smartMerge" },
+  { value: "block-replace", labelKey: "translationSegmentation.blockReplace" },
+  { value: "full-region", labelKey: "translationSegmentation.fullRegion" },
+] satisfies Array<{ value: string; labelKey: TranslationKey }>;
+
 export const defaultStatus: AppStatus = {
   bootSummary: "Starting desktop shell...",
   modelSummary: "Loading...",
