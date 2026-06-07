@@ -212,4 +212,15 @@ mod tests {
                 .is_some()
         );
     }
+
+    #[test]
+    fn recommends_single_source_translation_model_for_auto_source() {
+        let registry = ModelRegistry::with_builtin_defaults();
+
+        let model = registry
+            .recommended_translation(Some("auto"), "zh-CN")
+            .expect("default en-zh translation model should accept auto source");
+
+        assert_eq!(model.id, "opus-mt-en-zh-ct2-int8");
+    }
 }

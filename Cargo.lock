@@ -1158,6 +1158,7 @@ dependencies = [
  "log",
  "model_registry",
  "ocr_engine",
+ "platform_api",
  "shared_models",
  "translate_engine",
 ]
@@ -1733,12 +1734,14 @@ dependencies = [
  "log",
  "model_registry",
  "ocr_engine",
- "platform_win32",
+ "platform_api",
+ "platform_runtime",
  "raw-window-handle",
  "serde",
  "serde_json",
  "shared_models",
  "translate_engine",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4248,7 +4251,6 @@ dependencies = [
  "base64 0.22.1",
  "image",
  "ocr-rs",
- "platform_win32",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -4480,12 +4482,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
+name = "platform_api"
+version = "0.1.0"
+dependencies = [
+ "shared_models",
+]
+
+[[package]]
+name = "platform_runtime"
+version = "0.1.0"
+dependencies = [
+ "platform_api",
+ "platform_win32",
+]
+
+[[package]]
 name = "platform_win32"
 version = "0.1.0"
 dependencies = [
  "arboard",
  "image",
  "log",
+ "platform_api",
  "shared_models",
  "windows 0.61.3",
  "windows-sys 0.61.2",
@@ -6223,7 +6241,8 @@ dependencies = [
  "ipc",
  "log",
  "model_registry",
- "platform_win32",
+ "platform_api",
+ "platform_runtime",
  "serde",
  "serde_json",
  "shared_models",

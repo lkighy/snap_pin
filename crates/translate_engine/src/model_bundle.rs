@@ -64,6 +64,19 @@ impl TranslationModelBundle {
         self.manifest
             .supports_language_pair(source_language, target_language)
     }
+
+    pub fn default_source_language(&self) -> Option<&str> {
+        single_non_empty_language(&self.manifest.source_languages)
+    }
+}
+
+fn single_non_empty_language(languages: &[String]) -> Option<&str> {
+    let mut values = languages
+        .iter()
+        .map(|language| language.trim())
+        .filter(|language| !language.is_empty());
+    let first = values.next()?;
+    values.next().is_none().then_some(first)
 }
 
 pub fn validate_translation_manifest(manifest: &ModelManifest) -> Result<(), TranslateEngineError> {

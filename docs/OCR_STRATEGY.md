@@ -163,7 +163,7 @@ Custom HTTP OCR
 UI 建议：
 
 - `本地 OCR`：默认推荐，保护隐私，可离线。
-- `系统 OCR`：如果平台可用，作为轻量备选。
+- `系统 OCR`：如果平台可用，作为轻量备选。系统 OCR 属于 `platform_api::SystemOcr` 平台能力，不属于 `ocr_engine` 的本地模型 OCR 后端。
 - `外部 API`：用户主动配置后启用。
 - `关闭 OCR`：只截图和贴图。
 

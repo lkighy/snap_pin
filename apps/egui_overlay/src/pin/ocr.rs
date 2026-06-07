@@ -46,6 +46,14 @@ pub(crate) fn recognize_pin_image(request: PinOcrRequest) -> Result<OcrResult, S
         model_id: request.default_model_id,
     };
 
+    if job.provider == OcrProvider::System {
+        let platform = platform_runtime::create_platform();
+        return platform
+            .system_ocr()
+            .recognize(&job, &image_data)
+            .map_err(|error| error.message);
+    }
+
     let mut engine = RoutedOcrEngine::default();
     if matches!(job.provider, OcrProvider::Local(_)) {
         let registry = load_model_registry(request.models_registry.as_deref());

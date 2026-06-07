@@ -26,6 +26,7 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             commands::tauri::app_status,
+            commands::tauri::platform_capabilities,
             commands::tauri::get_settings,
             commands::tauri::list_models,
             commands::tauri::model_storage_info,
@@ -45,10 +46,11 @@ fn main() {
         .setup(|app| {
             log::info!("tauri setup started");
             let app_handle = app.handle().clone();
-            let state = ShellState::from_store(&app_handle);
+            let platform = platform_runtime::create_platform_arc();
+            let state = ShellState::from_store_with_platform(&app_handle, platform);
             app.manage(Mutex::new(state));
             app.manage(Mutex::new(commands::tauri::ModelDownloadRuntime::default()));
-            app.manage(Mutex::new(None::<platform_win32::HotkeyListener>));
+            app.manage(Mutex::new(None::<Box<dyn platform_api::HotkeyToken>>));
             app.manage(Mutex::new(None::<capture::launcher::PinHotkeyListener>));
             app.manage(Mutex::new(
                 capture::launcher::CaptureOverlayRuntime::default(),

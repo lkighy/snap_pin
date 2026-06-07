@@ -59,8 +59,10 @@ impl OcrEngine for RoutedOcrEngine {
                 "ocr_disabled",
                 "OCR is disabled for this job",
             )),
-            OcrProvider::System => platform_win32::recognize_system_ocr(job, image)
-                .map_err(|error| OcrEngineError::new(error.code, error.message)),
+            OcrProvider::System => Err(OcrEngineError::new(
+                "system_ocr_requires_platform",
+                "system OCR is a platform capability and must be dispatched through platform_api",
+            )),
             OcrProvider::Local(OcrLocalBackend::Mnn) => self.local_mnn.recognize_local(job, image),
             OcrProvider::Local(OcrLocalBackend::OnnxRuntime) => {
                 self.local_onnx.recognize_local(job, image)

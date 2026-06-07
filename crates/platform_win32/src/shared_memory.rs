@@ -7,6 +7,8 @@ use crate::PlatformError;
 #[cfg(not(windows))]
 pub struct NamedSharedMemory;
 
+impl platform_api::SharedMemoryLease for NamedSharedMemory {}
+
 #[cfg(not(windows))]
 pub fn create_named_shared_memory(
     _name: &str,

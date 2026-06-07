@@ -1,22 +1,9 @@
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 
+pub use platform_api::{GlobalHotkey, HotkeyEventSink, HotkeyRegistration, HotkeyToken};
+
 use crate::PlatformError;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HotkeyRegistration {
-    pub id: String,
-    pub accelerator: String,
-}
-
-impl HotkeyRegistration {
-    pub fn new(id: impl Into<String>, accelerator: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            accelerator: accelerator.into(),
-        }
-    }
-}
 
 pub struct HotkeyListener {
     stop: Option<Sender<()>>,
@@ -46,6 +33,8 @@ impl Drop for HotkeyListener {
         }
     }
 }
+
+impl HotkeyToken for HotkeyListener {}
 
 pub fn listen_for_hotkey<F>(
     registration: HotkeyRegistration,

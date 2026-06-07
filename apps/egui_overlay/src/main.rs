@@ -13,6 +13,7 @@ use pin::app::PinWindowApp;
 use pin::window::{PinWindowSizing, clamp_pin_window_size};
 use runtime::cli::{CliArgs, OverlayRunMode};
 use runtime::logging::init_logging;
+use runtime::owner::start_owner_watchdog;
 use runtime::text::OverlayText;
 
 const RESIDENT_IDLE_SIZE: f32 = 1.0;
@@ -22,10 +23,12 @@ const RESIDENT_IDLE_Y: f32 = -32000.0;
 fn main() -> eframe::Result<()> {
     init_logging();
     let args = CliArgs::parse();
+    start_owner_watchdog(args.owner_pid);
     log::info!(
-        "overlay starting mode={:?} resident={} snapshot={:?} image={:?}",
+        "overlay starting mode={:?} resident={} owner_pid={:?} snapshot={:?} image={:?}",
         args.mode,
         args.resident,
+        args.owner_pid,
         args.snapshot,
         args.image
     );

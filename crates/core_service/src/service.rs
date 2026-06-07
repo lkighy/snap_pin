@@ -3,7 +3,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use model_registry::ModelRegistry;
-use ocr_engine::{OcrEngine, RoutedOcrEngine};
+use ocr_engine::{OcrEngine, OcrEngineError, RoutedOcrEngine};
+use platform_api::{AppPlatform, PlatformCapabilities};
 use shared_models::{
     CoreCommand, CoreEvent, ImageData, LanguageCode, OcrJob, OcrProvider, Settings,
     TranslateProvider, TranslationRequest,
@@ -29,6 +30,7 @@ pub struct CoreService {
     hotkeys: HotkeyManager,
     clipboard: ClipboardManager,
     plugins: PluginRegistry,
+    platform: Option<Arc<dyn AppPlatform>>,
 }
 
 impl Default for CoreService {
@@ -48,11 +50,22 @@ impl Default for CoreService {
             hotkeys: HotkeyManager::default(),
             clipboard: ClipboardManager::default(),
             plugins: PluginRegistry::default(),
+            platform: None,
         }
     }
 }
 
 impl CoreService {
+    pub fn with_platform(platform: Arc<dyn AppPlatform>) -> Self {
+        let mut service = Self::default();
+        service.platform = Some(platform);
+        service
+    }
+
+    pub fn set_platform(&mut self, platform: Arc<dyn AppPlatform>) {
+        self.platform = Some(platform);
+    }
+
     pub fn handle_command(&mut self, command: CoreCommand) -> Vec<CoreEvent> {
         log::info!("core handling command {}", command_name(&command));
         let events = match command {
@@ -116,6 +129,13 @@ impl CoreService {
             "clipboard",
             "plugins",
         ]
+    }
+
+    pub fn platform_capabilities(&self) -> PlatformCapabilities {
+        self.platform.as_ref().map_or_else(
+            || PlatformCapabilities::unavailable("platform runtime is not initialized"),
+            |platform| platform.capabilities(),
+        )
     }
 
     pub fn local_ocr_runtime_status(&self) -> &'static str {
@@ -224,8 +244,9 @@ impl CoreService {
         let save_history = self.settings.history.enabled;
         let sender = self.ocr.completion_sender();
         let engine = self.ocr_engine.clone();
+        let platform = self.platform.clone();
         thread::spawn(move || {
-            let event = match engine.recognize(&job, &image) {
+            let event = match recognize_ocr_job(&engine, platform, &job, &image) {
                 Ok(result) => {
                     if save_history {
                         history
@@ -441,6 +462,29 @@ impl CoreService {
         log::info!("core loading translation model id={}", model.id);
         self.translate_engine.load_model(model)
     }
+}
+
+fn recognize_ocr_job(
+    engine: &RoutedOcrEngine,
+    platform: Option<Arc<dyn AppPlatform>>,
+    job: &OcrJob,
+    image: &ImageData,
+) -> Result<shared_models::OcrResult, OcrEngineError> {
+    if job.provider != OcrProvider::System {
+        return engine.recognize(job, image);
+    }
+
+    let Some(platform) = platform else {
+        return Err(OcrEngineError::new(
+            "system_ocr_unavailable",
+            "system OCR requires an injected platform runtime",
+        ));
+    };
+
+    platform
+        .system_ocr()
+        .recognize(job, image)
+        .map_err(|error| OcrEngineError::new(error.code, error.message))
 }
 
 fn command_name(command: &CoreCommand) -> &'static str {

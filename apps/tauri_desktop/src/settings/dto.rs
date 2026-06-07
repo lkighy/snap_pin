@@ -141,8 +141,11 @@ fn default_ocr_text_interaction_padding_y() -> f32 {
 pub struct OcrSettingsDto {
     #[serde(default = "default_ocr_mode")]
     pub mode: String,
+    #[serde(default = "default_ocr_provider")]
     pub provider: String,
+    #[serde(default)]
     pub language_hint: String,
+    #[serde(default)]
     pub auto_run_after_capture: bool,
     #[serde(default)]
     pub default_model_id: String,
@@ -182,17 +185,86 @@ fn default_ocr_timeout_ms() -> u64 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranslationSettingsDto {
+    #[serde(default = "default_translation_provider")]
     pub provider: String,
+    #[serde(default = "default_translation_target_language")]
     pub target_language: String,
     #[serde(default = "default_translation_segmentation_mode")]
     pub segmentation_mode: String,
+    #[serde(default = "default_smart_merge_settings")]
+    pub smart_merge: SmartMergeSettingsDto,
+    #[serde(default)]
     pub auto_translate_after_ocr: bool,
     #[serde(default)]
     pub default_model_id: String,
 }
 
+fn default_ocr_provider() -> String {
+    "local-mnn".to_owned()
+}
+
+fn default_translation_provider() -> String {
+    "local-ct2".to_owned()
+}
+
+fn default_translation_target_language() -> String {
+    "zh-CN".to_owned()
+}
+
 fn default_translation_segmentation_mode() -> String {
     "smart-merge".to_owned()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SmartMergeSettingsDto {
+    #[serde(default = "default_smart_merge_edge_tolerance_lines")]
+    pub edge_tolerance_lines: f32,
+    #[serde(default = "default_smart_merge_loose_edge_tolerance_lines")]
+    pub loose_edge_tolerance_lines: f32,
+    #[serde(default = "default_smart_merge_height_ratio_limit")]
+    pub height_ratio_limit: f32,
+    #[serde(default = "default_smart_merge_longer_line_ratio")]
+    pub longer_line_ratio: f32,
+    #[serde(default = "default_smart_merge_short_last_line_ratio")]
+    pub short_last_line_ratio: f32,
+    #[serde(default = "default_smart_merge_inline_label_max_chars")]
+    pub inline_label_max_chars: usize,
+}
+
+fn default_smart_merge_settings() -> SmartMergeSettingsDto {
+    SmartMergeSettingsDto {
+        edge_tolerance_lines: default_smart_merge_edge_tolerance_lines(),
+        loose_edge_tolerance_lines: default_smart_merge_loose_edge_tolerance_lines(),
+        height_ratio_limit: default_smart_merge_height_ratio_limit(),
+        longer_line_ratio: default_smart_merge_longer_line_ratio(),
+        short_last_line_ratio: default_smart_merge_short_last_line_ratio(),
+        inline_label_max_chars: default_smart_merge_inline_label_max_chars(),
+    }
+}
+
+fn default_smart_merge_edge_tolerance_lines() -> f32 {
+    1.35
+}
+
+fn default_smart_merge_loose_edge_tolerance_lines() -> f32 {
+    2.4
+}
+
+fn default_smart_merge_height_ratio_limit() -> f32 {
+    1.5
+}
+
+fn default_smart_merge_longer_line_ratio() -> f32 {
+    1.35
+}
+
+fn default_smart_merge_short_last_line_ratio() -> f32 {
+    0.72
+}
+
+fn default_smart_merge_inline_label_max_chars() -> usize {
+    32
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -271,6 +343,7 @@ impl From<&Settings> for AppSettingsDto {
                 provider: translate_provider_name(&settings.translate.provider),
                 target_language: settings.translate.target_language.clone(),
                 segmentation_mode: settings.translate.segmentation_mode.clone(),
+                smart_merge: SmartMergeSettingsDto::from(&settings.translate.smart_merge),
                 auto_translate_after_ocr: settings.translate.auto_translate_after_ocr,
                 default_model_id: settings
                     .translate
@@ -343,6 +416,7 @@ impl From<AppSettingsDto> for Settings {
         settings.translate.target_language = dto.translation.target_language;
         settings.translate.segmentation_mode =
             normalize_translation_segmentation_mode(&dto.translation.segmentation_mode);
+        settings.translate.smart_merge = dto.translation.smart_merge.into_settings();
         settings.translate.auto_translate_after_ocr = dto.translation.auto_translate_after_ocr;
         settings.translate.default_model_id = empty_to_none(dto.translation.default_model_id);
 
@@ -384,6 +458,32 @@ impl OcrTextOverlaySettingsDto {
             padding_y: self.padding_y.clamp(0.0, 32.0),
             interaction_padding_x: self.interaction_padding_x.clamp(0.0, 48.0),
             interaction_padding_y: self.interaction_padding_y.clamp(0.0, 48.0),
+        }
+    }
+}
+
+impl From<&shared_models::SmartMergeSettings> for SmartMergeSettingsDto {
+    fn from(settings: &shared_models::SmartMergeSettings) -> Self {
+        Self {
+            edge_tolerance_lines: settings.edge_tolerance_lines,
+            loose_edge_tolerance_lines: settings.loose_edge_tolerance_lines,
+            height_ratio_limit: settings.height_ratio_limit,
+            longer_line_ratio: settings.longer_line_ratio,
+            short_last_line_ratio: settings.short_last_line_ratio,
+            inline_label_max_chars: settings.inline_label_max_chars,
+        }
+    }
+}
+
+impl SmartMergeSettingsDto {
+    fn into_settings(self) -> shared_models::SmartMergeSettings {
+        shared_models::SmartMergeSettings {
+            edge_tolerance_lines: self.edge_tolerance_lines.clamp(0.2, 6.0),
+            loose_edge_tolerance_lines: self.loose_edge_tolerance_lines.clamp(0.2, 8.0),
+            height_ratio_limit: self.height_ratio_limit.clamp(1.0, 4.0),
+            longer_line_ratio: self.longer_line_ratio.clamp(1.0, 4.0),
+            short_last_line_ratio: self.short_last_line_ratio.clamp(0.1, 1.0),
+            inline_label_max_chars: self.inline_label_max_chars.clamp(1, 120),
         }
     }
 }

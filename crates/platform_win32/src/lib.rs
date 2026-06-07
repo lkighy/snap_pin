@@ -1,3 +1,4 @@
+mod app_platform;
 mod capture;
 mod clipboard;
 mod dialog;
@@ -7,6 +8,7 @@ mod shared_memory;
 mod system_ocr;
 mod window;
 
+pub use app_platform::*;
 pub use capture::*;
 pub use clipboard::*;
 pub use dialog::*;

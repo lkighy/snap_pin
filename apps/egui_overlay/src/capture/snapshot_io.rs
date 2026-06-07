@@ -94,7 +94,9 @@ pub(crate) fn load_shared_snapshot(
         ));
     }
 
-    let bytes = platform_win32::read_named_shared_memory(&snapshot.mapping_name, snapshot.byte_len)
+    let bytes = platform_runtime::create_platform()
+        .shared_memory()
+        .open(&snapshot.mapping_name, snapshot.byte_len)
         .map_err(|error| format!("{}: {error}", text.snapshot_load_failed))?;
     let rgba = image::RgbaImage::from_raw(snapshot.width, snapshot.height, bytes)
         .ok_or_else(|| format!("{}: invalid RGBA buffer", text.snapshot_load_failed))?;
@@ -192,7 +194,9 @@ pub(crate) fn save_snapshot_to_file(
     let cropped = crop_snapshot(snapshot, selection);
     let default_name = capture_file_name();
     log::info!("prompting save path default_name={default_name}");
-    let Some(image_path) = platform_win32::prompt_save_png_path(&default_name)
+    let Some(image_path) = platform_runtime::create_platform()
+        .file_dialog()
+        .save_png_path(&default_name)
         .map_err(|error| format!("{}: {error}", text.save_failed))?
     else {
         log::info!("save path prompt canceled");

@@ -8,6 +8,9 @@ The repository is currently a Rust workspace scaffold with clear ownership
 boundaries. See [docs/ARCHITECTURE_RULES.md](docs/ARCHITECTURE_RULES.md) before
 adding implementation code.
 
+Platform abstraction and future macOS/Linux compatibility are tracked in
+[docs/PLATFORM_COMPATIBILITY_PLAN.md](docs/PLATFORM_COMPATIBILITY_PLAN.md).
+
 OCR-specific model and runtime decisions are tracked in
 [docs/OCR_STRATEGY.md](docs/OCR_STRATEGY.md).
 OCR backends deferred until after 0.1 are tracked in
@@ -18,6 +21,9 @@ Translation-specific model and runtime decisions are tracked in
 
 The current runnable MVP status is tracked in
 [docs/MVP_STATUS.md](docs/MVP_STATUS.md).
+
+The `0.1.0` release boundary and pre-release checklist are tracked in
+[docs/RELEASE_0_1_PLAN.md](docs/RELEASE_0_1_PLAN.md).
 
 ## Run
 
@@ -135,9 +141,42 @@ choco install cmake -y
 - `apps/tauri_desktop`: Tauri shell boundary for tray, settings, commands, and UI IPC.
 - `apps/egui_overlay`: egui/wgpu overlay and pin-window rendering boundary.
 - `crates/core_service`: orchestration for screenshot, OCR, translation, hotkeys, clipboard, history, and plugins.
-- `crates/platform_win32`: Windows-specific APIs such as DXGI/WGC, windows, hotkeys, and clipboard.
+- `crates/platform_api`: cross-platform platform traits, DTOs, capability status, and platform errors.
+- `crates/platform_runtime`: current-OS platform assembly. App startup and command wiring use this crate to obtain `AppPlatform`.
+- `crates/platform_win32`: Windows implementation for capture, windows, hotkeys, clipboard, dialogs, shared memory, and system OCR.
 - `crates/ipc`: message envelopes and transport abstraction between Tauri, core, and overlay.
 - `crates/shared_models`: shared domain types used across every layer.
+
+## Platform Direction
+
+The project uses a capability-based platform layer instead of exposing
+Windows-specific APIs to business code:
+
+```text
+platform_api -> cross-platform traits, DTOs, capabilities, errors
+platform_runtime -> current-OS implementation assembly
+platform_win32 -> Windows implementation
+platform_macos -> future macOS implementation
+platform_linux -> future Linux implementation
+```
+
+Application and business layers should depend on platform capabilities instead
+of checking for Windows directly.
+
+`ocr_engine` owns local model OCR and external OCR API clients only. System OCR
+is dispatched through `platform_api::SystemOcr` by core/app wiring.
+
+## Checks
+
+Run the platform boundary gate before changes that touch app wiring, OCR,
+platform crates, or workspace dependencies:
+
+```powershell
+pwsh scripts/check-platform-boundaries.ps1
+```
+
+The script runs formatting, `cargo check --workspace --no-default-features`,
+and dependency boundary searches for direct platform implementation leaks.
 
 ## Current Status
 

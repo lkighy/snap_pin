@@ -1,0 +1,11 @@
+[package]
+name = "platform_runtime"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+platform_api.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+platform_win32.workspace = true

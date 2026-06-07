@@ -49,7 +49,7 @@ History updated
 - `crates/model_registry`：默认 OCR/翻译模型清单和推荐模型选择。
 - `crates/ocr_engine`：OCR trait 和 mock MNN engine。
 - `crates/translate_engine`：翻译 trait 和 mock CTranslate2 engine。
-- `crates/platform_win32`：Win32 截图、窗口、热键和剪贴板接口占位。
+- `crates/platform_win32`：当前 Windows 截图、窗口、热键、剪贴板、文件对话框、共享内存和系统 OCR 实现边界。后续会迁到 `platform_api` / `platform_runtime` 能力架构后面。
 - `crates/ipc`：IPC envelope 和内存 bus。
 - `crates/shared_models`：跨层共享模型。
 
@@ -69,17 +69,30 @@ History updated
 
 ## 下一步建议
 
+0.1 发布边界、发布前关闭项和验收清单见
+[RELEASE_0_1_PLAN.md](RELEASE_0_1_PLAN.md)。本节只保留功能推进顺序。
+平台兼容与抽象路线见 [PLATFORM_COMPATIBILITY_PLAN.md](PLATFORM_COMPATIBILITY_PLAN.md)。
+
 第一优先级：
 
 ```text
-接入 Tauri 2 shell
-托盘菜单
-设置页
-模型列表 UI
-全局快捷键开关
+新增 platform_api，迁出通用平台类型、能力状态和平台错误
+新增 platform_runtime，按 target_os 组装当前平台实现
+让 platform_win32 实现 platform_api trait
+移除 ocr_engine 对 platform_win32 的直接依赖
+把 app 层散落的 platform_win32 调用收敛到平台接线边界
 ```
 
 第二优先级：
+
+```text
+完成 0.1 发布前 P0/P1 验证
+对齐 README、版本号和发布说明
+确认默认构建下 OCR/翻译 runtime 缺失状态清晰
+保留当前 Tauri shell、托盘、设置页和模型列表 UI 的稳定演示能力
+```
+
+第三优先级：
 
 ```text
 接入 egui/eframe/wgpu overlay
@@ -88,7 +101,7 @@ History updated
 把 CoreEvent 渲染为 TextOverlay
 ```
 
-第三优先级：
+第四优先级：
 
 ```text
 接入 Windows WGC 截图
@@ -96,14 +109,14 @@ History updated
 处理 DPI 和多显示器
 ```
 
-第四优先级：
+第五优先级：
 
 ```text
 接入 OCR MNN 后端
 实现模型下载/导入和校验
 ```
 
-第五优先级：
+第六优先级：
 
 ```text
 接入 ct2rs / CTranslate2 native runtime
@@ -111,7 +124,7 @@ History updated
 完善本地翻译模型下载器和可用性状态
 ```
 
-第六优先级：
+第七优先级：
 
 ```text
 接入外部 OCR/翻译 API

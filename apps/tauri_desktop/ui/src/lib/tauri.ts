@@ -6,6 +6,33 @@ export interface AppStatus {
   historySummary: string;
   localOcrRuntimeStatus: string;
   localTranslateRuntimeStatus: string;
+  platformCapabilities: PlatformCapabilities;
+}
+
+export type CapabilityStatusKey =
+  | "supported"
+  | "degraded"
+  | "needsSetup"
+  | "permissionDenied"
+  | "unavailable";
+
+export interface CapabilityStatus {
+  status: CapabilityStatusKey;
+  reason?: string;
+  action?: string;
+}
+
+export interface PlatformCapabilities {
+  screenCapture: CapabilityStatus;
+  overlayWindow: CapabilityStatus;
+  pinWindow: CapabilityStatus;
+  systemOcr: CapabilityStatus;
+  clipboardRead: CapabilityStatus;
+  clipboardWrite: CapabilityStatus;
+  globalHotkey: CapabilityStatus;
+  fileDialog: CapabilityStatus;
+  sharedMemory: CapabilityStatus;
+  secureStorage: CapabilityStatus;
 }
 
 export interface InterfaceSettings {
@@ -77,8 +104,18 @@ export interface TranslationSettings {
   provider: string;
   targetLanguage: string;
   segmentationMode: string;
+  smartMerge: SmartMergeSettings;
   autoTranslateAfterOcr: boolean;
   defaultModelId: string;
+}
+
+export interface SmartMergeSettings {
+  edgeToleranceLines: number;
+  looseEdgeToleranceLines: number;
+  heightRatioLimit: number;
+  longerLineRatio: number;
+  shortLastLineRatio: number;
+  inlineLabelMaxChars: number;
 }
 
 export interface HotkeySettings {
@@ -149,6 +186,10 @@ export interface ModelStorageInfo {
 
 export function getAppStatus() {
   return invoke<AppStatus>("app_status");
+}
+
+export function getPlatformCapabilities() {
+  return invoke<PlatformCapabilities>("platform_capabilities");
 }
 
 export function getSettings() {

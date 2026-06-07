@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 log.workspace = true
+platform_api.workspace = true
 shared_models.workspace = true
 
 [target.'cfg(windows)'.dependencies]

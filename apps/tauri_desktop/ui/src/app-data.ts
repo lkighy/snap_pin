@@ -41,6 +41,8 @@ export const completionActions = [
 
 export const ocrProviders = [
   { value: "local-mnn", labelKey: "provider.localMnn" },
+  { value: "local-onnx", labelKey: "provider.localOnnx" },
+  { value: "local-paddle", labelKey: "provider.localPaddle" },
   { value: "system", labelKey: "provider.systemOcr" },
   { value: "api-openai", labelKey: "provider.openAi" },
   { value: "api-azure", labelKey: "provider.azureVision" },
@@ -86,6 +88,48 @@ export const defaultStatus: AppStatus = {
   historySummary: "Loading...",
   localOcrRuntimeStatus: "local-ocr-rs-disabled",
   localTranslateRuntimeStatus: "local-translate-ct2-disabled",
+  platformCapabilities: {
+    screenCapture: {
+      status: "unavailable",
+      reason: "platform capabilities have not loaded yet",
+    },
+    overlayWindow: {
+      status: "unavailable",
+      reason: "platform capabilities have not loaded yet",
+    },
+    pinWindow: {
+      status: "unavailable",
+      reason: "platform capabilities have not loaded yet",
+    },
+    systemOcr: {
+      status: "unavailable",
+      reason: "platform capabilities have not loaded yet",
+    },
+    clipboardRead: {
+      status: "unavailable",
+      reason: "platform capabilities have not loaded yet",
+    },
+    clipboardWrite: {
+      status: "unavailable",
+      reason: "platform capabilities have not loaded yet",
+    },
+    globalHotkey: {
+      status: "unavailable",
+      reason: "platform capabilities have not loaded yet",
+    },
+    fileDialog: {
+      status: "unavailable",
+      reason: "platform capabilities have not loaded yet",
+    },
+    sharedMemory: {
+      status: "unavailable",
+      reason: "platform capabilities have not loaded yet",
+    },
+    secureStorage: {
+      status: "unavailable",
+      reason: "platform capabilities have not loaded yet",
+    },
+  },
 };
 
 export type SaveStatusKey =

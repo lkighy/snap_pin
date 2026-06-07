@@ -71,6 +71,7 @@ pub fn capture_region(region: Option<Rect>) -> Result<CapturedFrame, PlatformErr
 
     Ok(CapturedFrame {
         pixel_size: Size::new(width as f32, height as f32),
+        scale_factor: 1.0,
         format: ImageFormat::Bgra8,
         bytes,
     })

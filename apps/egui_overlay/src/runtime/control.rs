@@ -68,6 +68,30 @@ fn default_translate_segmentation_mode() -> String {
     "smart-merge".to_owned()
 }
 
+fn default_smart_merge_edge_tolerance_lines() -> f32 {
+    1.35
+}
+
+fn default_smart_merge_loose_edge_tolerance_lines() -> f32 {
+    2.4
+}
+
+fn default_smart_merge_height_ratio_limit() -> f32 {
+    1.5
+}
+
+fn default_smart_merge_longer_line_ratio() -> f32 {
+    1.35
+}
+
+fn default_smart_merge_short_last_line_ratio() -> f32 {
+    0.72
+}
+
+fn default_smart_merge_inline_label_max_chars() -> usize {
+    32
+}
+
 fn default_ocr_text_font_height_ratio() -> f32 {
     0.46
 }
@@ -100,6 +124,7 @@ fn default_ocr_text_interaction_padding_y() -> f32 {
 pub(crate) enum OverlayCommand {
     Capture(OverlayCaptureCommand),
     PinSelection,
+    Shutdown,
     Error(String),
 }
 
@@ -178,6 +203,18 @@ pub(crate) struct OverlayCaptureCommand {
     pub(crate) translate_segmentation_mode: String,
     #[serde(default)]
     pub(crate) translate_default_model_id: Option<String>,
+    #[serde(default = "default_smart_merge_edge_tolerance_lines")]
+    pub(crate) smart_merge_edge_tolerance_lines: f32,
+    #[serde(default = "default_smart_merge_loose_edge_tolerance_lines")]
+    pub(crate) smart_merge_loose_edge_tolerance_lines: f32,
+    #[serde(default = "default_smart_merge_height_ratio_limit")]
+    pub(crate) smart_merge_height_ratio_limit: f32,
+    #[serde(default = "default_smart_merge_longer_line_ratio")]
+    pub(crate) smart_merge_longer_line_ratio: f32,
+    #[serde(default = "default_smart_merge_short_last_line_ratio")]
+    pub(crate) smart_merge_short_last_line_ratio: f32,
+    #[serde(default = "default_smart_merge_inline_label_max_chars")]
+    pub(crate) smart_merge_inline_label_max_chars: usize,
     #[serde(default = "default_ocr_text_font_height_ratio")]
     pub(crate) ocr_text_font_height_ratio: f32,
     #[serde(default = "default_ocr_text_min_font_size")]
@@ -204,6 +241,13 @@ pub(crate) struct OverlayPingCommand {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OverlayPinSelectionCommand {
+    kind: String,
+    protocol: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OverlayShutdownCommand {
     kind: String,
     protocol: u32,
 }
@@ -272,6 +316,15 @@ pub(crate) fn start_control_server(port: u16, queue: OverlayCommandQueue, ctx: C
                                     &ctx,
                                     OverlayCommand::PinSelection,
                                     "pin-selection",
+                                );
+                                write_control_response(&mut stream, result);
+                            } else if is_supported_shutdown_command(&line) {
+                                log::info!("overlay shutdown command accepted by control thread");
+                                let result = queue_overlay_command_with_ack(
+                                    &queue,
+                                    &ctx,
+                                    OverlayCommand::Shutdown,
+                                    "shutdown",
                                 );
                                 write_control_response(&mut stream, result);
                             } else {
@@ -399,5 +452,11 @@ fn is_supported_ping(line: &str) -> bool {
 fn is_supported_pin_selection_command(line: &str) -> bool {
     serde_json::from_str::<OverlayPinSelectionCommand>(line).is_ok_and(|command| {
         command.kind == "pinSelection" && command.protocol == CONTROL_PROTOCOL_VERSION
+    })
+}
+
+fn is_supported_shutdown_command(line: &str) -> bool {
+    serde_json::from_str::<OverlayShutdownCommand>(line).is_ok_and(|command| {
+        command.kind == "shutdown" && command.protocol == CONTROL_PROTOCOL_VERSION
     })
 }

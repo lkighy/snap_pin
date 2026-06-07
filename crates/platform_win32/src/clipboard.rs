@@ -1,24 +1,18 @@
-use std::path::PathBuf;
+pub use platform_api::{Clipboard, ClipboardPayload};
 
 use crate::PlatformError;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ClipboardPayload {
-    Text(String),
-    ImageRgba {
-        width: usize,
-        height: usize,
-        bytes: Vec<u8>,
-    },
-    Files(Vec<PathBuf>),
-}
 
 pub fn read_clipboard_payload() -> Result<ClipboardPayload, PlatformError> {
     platform::read_clipboard_payload()
 }
 
+pub fn write_clipboard_payload(payload: ClipboardPayload) -> Result<(), PlatformError> {
+    platform::write_clipboard_payload(payload)
+}
+
 #[cfg(windows)]
 mod platform {
+    use std::borrow::Cow;
     use std::path::PathBuf;
 
     use windows_sys::Win32::Foundation::HANDLE;
@@ -68,6 +62,44 @@ mod platform {
             "clipboard_empty",
             "clipboard does not contain files, an image, or text",
         ))
+    }
+
+    pub fn write_clipboard_payload(payload: ClipboardPayload) -> Result<(), PlatformError> {
+        let mut clipboard = arboard::Clipboard::new().map_err(|error| {
+            PlatformError::new(
+                "clipboard_open_failed",
+                format!("failed to open clipboard: {error}"),
+            )
+        })?;
+
+        match payload {
+            ClipboardPayload::Text(text) => clipboard.set_text(text).map_err(|error| {
+                PlatformError::new(
+                    "clipboard_write_failed",
+                    format!("failed to write clipboard text: {error}"),
+                )
+            }),
+            ClipboardPayload::ImageRgba {
+                width,
+                height,
+                bytes,
+            } => clipboard
+                .set_image(arboard::ImageData {
+                    width,
+                    height,
+                    bytes: Cow::Owned(bytes),
+                })
+                .map_err(|error| {
+                    PlatformError::new(
+                        "clipboard_write_failed",
+                        format!("failed to write clipboard image: {error}"),
+                    )
+                }),
+            ClipboardPayload::Files(_) => Err(PlatformError::new(
+                "clipboard_files_write_unsupported",
+                "writing file lists to the clipboard is not implemented on Windows",
+            )),
+        }
     }
 
     struct ClipboardGuard;
@@ -151,6 +183,13 @@ mod platform {
         Err(PlatformError::new(
             "unsupported_platform",
             "clipboard pinning is currently implemented only on Windows",
+        ))
+    }
+
+    pub fn write_clipboard_payload(_payload: ClipboardPayload) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            "unsupported_platform",
+            "clipboard writing is currently implemented only on Windows",
         ))
     }
 }

@@ -1,4 +1,5 @@
-use shared_models::Rect;
+pub use platform_api::{CaptureWindowRegion, NativeWindowRef, WindowOps};
+use platform_api::{PlatformError, Rect};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WindowHandle(pub isize);
@@ -22,12 +23,6 @@ impl OverlayWindowOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CaptureWindowRegion {
-    pub bounds: Rect,
-    pub depth: u8,
-}
-
 pub fn capture_window_regions(screen_bounds: Rect) -> Vec<CaptureWindowRegion> {
     platform::capture_window_regions(screen_bounds)
 }
@@ -36,22 +31,51 @@ pub fn suspend_window_for_modal_dialog(hwnd: isize) {
     platform::suspend_window_for_modal_dialog(hwnd);
 }
 
+pub fn try_suspend_window_for_modal_dialog(hwnd: isize) -> Result<(), PlatformError> {
+    platform::try_suspend_window_for_modal_dialog(hwnd)
+}
+
 pub fn restore_window_after_modal_dialog(hwnd: isize, always_on_top: bool) {
     platform::restore_window_after_modal_dialog(hwnd, always_on_top);
+}
+
+pub fn try_restore_window_after_modal_dialog(
+    hwnd: isize,
+    always_on_top: bool,
+) -> Result<(), PlatformError> {
+    platform::try_restore_window_after_modal_dialog(hwnd, always_on_top)
 }
 
 pub fn park_window(hwnd: isize, bounds: Rect, always_on_top: bool) {
     platform::park_window(hwnd, bounds, always_on_top);
 }
 
+pub fn try_park_window(
+    hwnd: isize,
+    bounds: Rect,
+    always_on_top: bool,
+) -> Result<(), PlatformError> {
+    platform::try_park_window(hwnd, bounds, always_on_top)
+}
+
+pub fn set_always_on_top(hwnd: isize, enabled: bool) -> Result<(), PlatformError> {
+    platform::set_always_on_top(hwnd, enabled)
+}
+
+pub fn set_click_through(hwnd: isize, enabled: bool) -> Result<(), PlatformError> {
+    platform::set_click_through(hwnd, enabled)
+}
+
 #[cfg(windows)]
 mod platform {
+    use platform_api::PlatformError;
     use shared_models::{Point, Rect, Size};
     use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT as WinRect};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumChildWindows, EnumWindows, GetWindowRect, HWND_NOTOPMOST, HWND_TOPMOST,
-        IsWindowVisible, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
-        ShowWindow,
+        EnumChildWindows, EnumWindows, GWL_EXSTYLE, GetWindowLongW, GetWindowRect, HWND_NOTOPMOST,
+        HWND_TOPMOST, IsWindow, IsWindowVisible, LWA_ALPHA, SW_HIDE, SW_SHOWNA, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetLayeredWindowAttributes, SetWindowLongW,
+        SetWindowPos, ShowWindow, WS_EX_LAYERED, WS_EX_TRANSPARENT,
     };
 
     use super::CaptureWindowRegion;
@@ -75,14 +99,18 @@ mod platform {
     }
 
     pub fn suspend_window_for_modal_dialog(hwnd: isize) {
+        let _ = try_suspend_window_for_modal_dialog(hwnd);
+    }
+
+    pub fn try_suspend_window_for_modal_dialog(hwnd: isize) -> Result<(), PlatformError> {
         let hwnd = hwnd as HWND;
         if hwnd.is_null() {
-            return;
+            return Err(invalid_window());
         }
 
         log::info!("suspending window for modal dialog hwnd={hwnd:?}");
-        unsafe {
-            let _ = SetWindowPos(
+        let positioned = unsafe {
+            SetWindowPos(
                 hwnd,
                 HWND_NOTOPMOST,
                 0,
@@ -90,15 +118,33 @@ mod platform {
                 0,
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            );
-            let _ = ShowWindow(hwnd, SW_HIDE);
+            )
+        };
+        if positioned == 0 {
+            return Err(PlatformError::new(
+                "window_topmost_failed",
+                "failed to remove topmost state before modal dialog",
+            ));
         }
+
+        let shown = unsafe { ShowWindow(hwnd, SW_HIDE) };
+        if shown == 0 {
+            log::debug!("modal suspend hid a window that was already hidden");
+        }
+        Ok(())
     }
 
     pub fn restore_window_after_modal_dialog(hwnd: isize, always_on_top: bool) {
+        let _ = try_restore_window_after_modal_dialog(hwnd, always_on_top);
+    }
+
+    pub fn try_restore_window_after_modal_dialog(
+        hwnd: isize,
+        always_on_top: bool,
+    ) -> Result<(), PlatformError> {
         let hwnd = hwnd as HWND;
         if hwnd.is_null() {
-            return;
+            return Err(invalid_window());
         }
 
         log::info!(
@@ -112,7 +158,9 @@ mod platform {
 
         unsafe {
             let _ = ShowWindow(hwnd, SW_SHOWNA);
-            let _ = SetWindowPos(
+        }
+        let positioned = unsafe {
+            SetWindowPos(
                 hwnd,
                 insert_after,
                 0,
@@ -120,14 +168,29 @@ mod platform {
                 0,
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            );
+            )
+        };
+        if positioned == 0 {
+            return Err(PlatformError::new(
+                "window_topmost_failed",
+                "failed to restore window after modal dialog",
+            ));
         }
+        Ok(())
     }
 
     pub fn park_window(hwnd: isize, bounds: Rect, always_on_top: bool) {
+        let _ = try_park_window(hwnd, bounds, always_on_top);
+    }
+
+    pub fn try_park_window(
+        hwnd: isize,
+        bounds: Rect,
+        always_on_top: bool,
+    ) -> Result<(), PlatformError> {
         let hwnd = hwnd as HWND;
         if hwnd.is_null() {
-            return;
+            return Err(invalid_window());
         }
 
         let insert_after = if always_on_top {
@@ -143,10 +206,92 @@ mod platform {
         log::info!(
             "parking window hwnd={hwnd:?} x={x} y={y} width={width} height={height} always_on_top={always_on_top}"
         );
+        let positioned =
+            unsafe { SetWindowPos(hwnd, insert_after, x, y, width, height, SWP_NOACTIVATE) };
+        if positioned == 0 {
+            return Err(PlatformError::new(
+                "window_park_failed",
+                "failed to move the window to its parked bounds",
+            ));
+        }
         unsafe {
-            let _ = SetWindowPos(hwnd, insert_after, x, y, width, height, SWP_NOACTIVATE);
             let _ = ShowWindow(hwnd, SW_SHOWNA);
         }
+        Ok(())
+    }
+
+    pub fn set_always_on_top(hwnd: isize, enabled: bool) -> Result<(), PlatformError> {
+        let hwnd = validated_hwnd(hwnd)?;
+        let insert_after = if enabled {
+            HWND_TOPMOST
+        } else {
+            HWND_NOTOPMOST
+        };
+        let positioned = unsafe {
+            SetWindowPos(
+                hwnd,
+                insert_after,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+        };
+        if positioned == 0 {
+            return Err(PlatformError::new(
+                "window_topmost_failed",
+                "failed to update the window topmost state",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn set_click_through(hwnd: isize, enabled: bool) -> Result<(), PlatformError> {
+        let hwnd = validated_hwnd(hwnd)?;
+        let current = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) };
+        let transparent = WS_EX_LAYERED | WS_EX_TRANSPARENT;
+        let next = if enabled {
+            current | transparent as i32
+        } else {
+            current & !(WS_EX_TRANSPARENT as i32)
+        };
+        let previous = unsafe { SetWindowLongW(hwnd, GWL_EXSTYLE, next) };
+        if previous == 0 {
+            return Err(PlatformError::new(
+                "window_click_through_failed",
+                "failed to update the window extended style",
+            ));
+        }
+
+        if enabled {
+            let alpha_set = unsafe { SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA) };
+            if alpha_set == 0 {
+                return Err(PlatformError::new(
+                    "window_click_through_failed",
+                    "failed to preserve layered window alpha",
+                ));
+            }
+        }
+
+        let refreshed = unsafe {
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            )
+        };
+        if refreshed == 0 {
+            return Err(PlatformError::new(
+                "window_click_through_failed",
+                "failed to refresh the window style",
+            ));
+        }
+        Ok(())
     }
 
     struct EnumContext {
@@ -328,10 +473,24 @@ mod platform {
             && a.size.width.round() == b.size.width.round()
             && a.size.height.round() == b.size.height.round()
     }
+
+    fn validated_hwnd(hwnd: isize) -> Result<HWND, PlatformError> {
+        let hwnd = hwnd as HWND;
+        if hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 {
+            Err(invalid_window())
+        } else {
+            Ok(hwnd)
+        }
+    }
+
+    fn invalid_window() -> PlatformError {
+        PlatformError::new("invalid_window", "the native window handle is not valid")
+    }
 }
 
 #[cfg(not(windows))]
 mod platform {
+    use platform_api::PlatformError;
     use shared_models::Rect;
 
     use super::CaptureWindowRegion;
@@ -342,7 +501,41 @@ mod platform {
 
     pub fn suspend_window_for_modal_dialog(_hwnd: isize) {}
 
+    pub fn try_suspend_window_for_modal_dialog(_hwnd: isize) -> Result<(), PlatformError> {
+        Err(unsupported_window_ops())
+    }
+
     pub fn restore_window_after_modal_dialog(_hwnd: isize, _always_on_top: bool) {}
 
+    pub fn try_restore_window_after_modal_dialog(
+        _hwnd: isize,
+        _always_on_top: bool,
+    ) -> Result<(), PlatformError> {
+        Err(unsupported_window_ops())
+    }
+
     pub fn park_window(_hwnd: isize, _bounds: Rect, _always_on_top: bool) {}
+
+    pub fn try_park_window(
+        _hwnd: isize,
+        _bounds: Rect,
+        _always_on_top: bool,
+    ) -> Result<(), PlatformError> {
+        Err(unsupported_window_ops())
+    }
+
+    pub fn set_always_on_top(_hwnd: isize, _enabled: bool) -> Result<(), PlatformError> {
+        Err(unsupported_window_ops())
+    }
+
+    pub fn set_click_through(_hwnd: isize, _enabled: bool) -> Result<(), PlatformError> {
+        Err(unsupported_window_ops())
+    }
+
+    fn unsupported_window_ops() -> PlatformError {
+        PlatformError::new(
+            "unsupported_platform",
+            "window operations are currently implemented only on Windows",
+        )
+    }
 }

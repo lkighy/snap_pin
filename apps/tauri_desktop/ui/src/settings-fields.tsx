@@ -29,6 +29,34 @@ export function FieldGrid({ children }: { children: ReactNode }) {
   );
 }
 
+export function SettingsStack({ children }: { children: ReactNode }) {
+  return <div className="grid min-w-0 gap-5">{children}</div>;
+}
+
+export function SettingsSection({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="min-w-0">
+      <div className="mb-3 min-w-0">
+        <h3 className="break-words text-sm font-semibold leading-6">{title}</h3>
+        {description ? (
+          <p className="mt-1 break-words text-xs leading-5 text-muted-foreground">
+            {description}
+          </p>
+        ) : null}
+      </div>
+      <FieldGrid>{children}</FieldGrid>
+    </section>
+  );
+}
+
 function FieldFrame({
   label,
   children,
@@ -336,15 +364,23 @@ export function SelectField({
   value,
   options,
   onValueChange,
+  fallbackValue,
 }: {
   label: string;
   value: string;
   options: ReadonlyArray<{ value: string; label: string; disabled?: boolean }>;
   onValueChange: (value: string) => void;
+  fallbackValue?: string;
 }) {
+  const selectedValue = options.some((option) => option.value === value)
+    ? value
+    : fallbackValue && options.some((option) => option.value === fallbackValue)
+      ? fallbackValue
+      : options[0]?.value ?? "";
+
   return (
     <FieldFrame label={label}>
-      <Select value={value} onValueChange={onValueChange}>
+      <Select value={selectedValue} onValueChange={onValueChange}>
         <SelectTrigger className="min-w-0">
           <SelectValue />
         </SelectTrigger>

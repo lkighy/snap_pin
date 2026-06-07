@@ -1,25 +1,13 @@
-use shared_models::{ImageFormat, Rect, Size};
-
-use crate::PlatformError;
+pub use platform_api::{
+    CaptureBackendHint, CaptureRequest, CapturedFrame, MonitorInfo, ScreenCapture,
+};
+use platform_api::{PlatformError, Rect};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureBackendKind {
     Dxgi,
     Gdi,
     Wgc,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct CaptureRequest {
-    pub region: Option<Rect>,
-    pub include_cursor: bool,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct CapturedFrame {
-    pub pixel_size: Size,
-    pub format: ImageFormat,
-    pub bytes: Vec<u8>,
 }
 
 pub trait WindowsCaptureBackend {
@@ -72,7 +60,10 @@ pub fn virtual_screen_bounds() -> Rect {
 
 #[cfg(not(windows))]
 pub fn virtual_screen_bounds() -> Rect {
-    Rect::new(shared_models::Point::ZERO, Size::new(1280.0, 720.0))
+    Rect::new(
+        shared_models::Point::ZERO,
+        shared_models::Size::new(1280.0, 720.0),
+    )
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

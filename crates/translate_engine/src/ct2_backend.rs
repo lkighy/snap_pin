@@ -1,4 +1,4 @@
-use shared_models::{TranslationRequest, TranslationResult};
+use shared_models::{LanguageCode, TranslationRequest, TranslationResult};
 
 use crate::{TranslateEngineError, TranslationModelBundle};
 
@@ -6,8 +6,8 @@ pub fn translate(
     bundle: &TranslationModelBundle,
     request: &TranslationRequest,
 ) -> Result<TranslationResult, TranslateEngineError> {
-    validate_request_language_pair(bundle, request)?;
-    translate_with_runtime(bundle, request)
+    let request = request_with_model_defaults(bundle, request)?;
+    translate_with_runtime(bundle, &request)
 }
 
 pub fn runtime_status() -> &'static str {
@@ -18,27 +18,49 @@ pub fn runtime_status() -> &'static str {
     }
 }
 
-fn validate_request_language_pair(
+fn request_with_model_defaults(
     bundle: &TranslationModelBundle,
     request: &TranslationRequest,
-) -> Result<(), TranslateEngineError> {
-    let source = request
-        .source_language
-        .as_ref()
-        .map(|language| language.0.as_str());
-    if !bundle.supports_language_pair(source, &request.target_language.0) {
+) -> Result<TranslationRequest, TranslateEngineError> {
+    let mut request = request.clone();
+    request.source_language = resolved_source_language(bundle, request.source_language.as_ref());
+
+    if !bundle.supports_language_pair(
+        request
+            .source_language
+            .as_ref()
+            .map(|language| language.0.as_str()),
+        &request.target_language.0,
+    ) {
         return Err(TranslateEngineError::new(
             "translation_language_pair_unsupported",
             format!(
                 "translation model '{}' does not support '{} -> {}'",
                 bundle.manifest.id,
-                source.unwrap_or("auto"),
+                request
+                    .source_language
+                    .as_ref()
+                    .map(|language| language.0.as_str())
+                    .unwrap_or("auto"),
                 request.target_language.0
             ),
         ));
     }
 
-    Ok(())
+    Ok(request)
+}
+
+fn resolved_source_language(
+    bundle: &TranslationModelBundle,
+    requested: Option<&LanguageCode>,
+) -> Option<LanguageCode> {
+    let requested = requested
+        .map(|language| language.0.trim())
+        .filter(|language| !language.is_empty() && !language.eq_ignore_ascii_case("auto"));
+
+    requested
+        .map(LanguageCode::new)
+        .or_else(|| bundle.default_source_language().map(LanguageCode::new))
 }
 
 #[cfg(feature = "local-translate-ct2")]
@@ -132,7 +154,7 @@ mod tests {
 
     use crate::TranslationModelBundle;
 
-    use super::translate;
+    use super::{request_with_model_defaults, translate};
 
     fn bundle() -> TranslationModelBundle {
         TranslationModelBundle {
@@ -164,11 +186,11 @@ mod tests {
         }
     }
 
-    fn request(target_language: &str) -> TranslationRequest {
+    fn request(source_language: Option<&str>, target_language: &str) -> TranslationRequest {
         TranslationRequest {
             id: "translate-test".to_owned(),
             source_text: "hello".to_owned(),
-            source_language: Some(LanguageCode::new("en")),
+            source_language: source_language.map(LanguageCode::new),
             target_language: LanguageCode::new(target_language),
             provider: TranslateProvider::Local(TranslateLocalBackend::CTranslate2),
             model_id: Some("opus-mt-en-zh-ct2-int8".to_owned()),
@@ -178,7 +200,30 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_language_pair_before_runtime() {
-        let error = translate(&bundle(), &request("ja")).unwrap_err();
+        let error = translate(&bundle(), &request(Some("en"), "ja")).unwrap_err();
+
+        assert_eq!(error.code, "translation_language_pair_unsupported");
+    }
+
+    #[test]
+    fn defaults_missing_source_language_from_single_source_model() {
+        let request = request_with_model_defaults(&bundle(), &request(None, "zh-CN")).unwrap();
+
+        assert_eq!(request.source_language, Some(LanguageCode::new("en")));
+    }
+
+    #[test]
+    fn defaults_auto_source_language_from_single_source_model() {
+        let request =
+            request_with_model_defaults(&bundle(), &request(Some("auto"), "zh-CN")).unwrap();
+
+        assert_eq!(request.source_language, Some(LanguageCode::new("en")));
+    }
+
+    #[test]
+    fn rejects_explicit_unsupported_source_language() {
+        let error =
+            request_with_model_defaults(&bundle(), &request(Some("fr"), "zh-CN")).unwrap_err();
 
         assert_eq!(error.code, "translation_language_pair_unsupported");
     }

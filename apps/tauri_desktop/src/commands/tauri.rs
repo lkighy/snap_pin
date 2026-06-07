@@ -23,6 +23,30 @@ pub struct AppStatus {
     pub history_summary: String,
     pub local_ocr_runtime_status: String,
     pub local_translate_runtime_status: String,
+    pub platform_capabilities: PlatformCapabilitiesDto,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformCapabilitiesDto {
+    pub screen_capture: CapabilityStatusDto,
+    pub overlay_window: CapabilityStatusDto,
+    pub pin_window: CapabilityStatusDto,
+    pub system_ocr: CapabilityStatusDto,
+    pub clipboard_read: CapabilityStatusDto,
+    pub clipboard_write: CapabilityStatusDto,
+    pub global_hotkey: CapabilityStatusDto,
+    pub file_dialog: CapabilityStatusDto,
+    pub shared_memory: CapabilityStatusDto,
+    pub secure_storage: CapabilityStatusDto,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityStatusDto {
+    pub status: &'static str,
+    pub reason: Option<String>,
+    pub action: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -132,9 +156,21 @@ pub fn app_status(state: State<'_, Mutex<ShellState>>) -> Result<AppStatus, Stri
         history_summary: state.history_summary(),
         local_ocr_runtime_status: state.local_ocr_runtime_status().to_owned(),
         local_translate_runtime_status: state.local_translate_runtime_status().to_owned(),
+        platform_capabilities: state.platform_capabilities().into(),
     };
     log::info!("tauri command app_status completed");
     Ok(status)
+}
+
+#[tauri::command]
+pub fn platform_capabilities(
+    state: State<'_, Mutex<ShellState>>,
+) -> Result<PlatformCapabilitiesDto, String> {
+    log::info!("tauri command platform_capabilities started");
+    let state = state.lock().map_err(|_| "shell state lock poisoned")?;
+    let capabilities = state.platform_capabilities().into();
+    log::info!("tauri command platform_capabilities completed");
+    Ok(capabilities)
 }
 
 #[tauri::command]
@@ -171,7 +207,9 @@ pub fn choose_ocr_model_storage_dir(
 ) -> Result<Option<ModelStorageInfoDto>, String> {
     log::info!("tauri command choose_ocr_model_storage_dir started");
     ensure_no_model_download_running(&runtime)?;
-    let Some(path) = platform_win32::prompt_folder_path("Choose OCR model download location")
+    let Some(path) = platform_runtime::create_platform()
+        .file_dialog()
+        .pick_folder("Choose OCR model download location")
         .map_err(|error| format!("{}: {}", error.code, error.message))?
     else {
         log::info!("tauri command choose_ocr_model_storage_dir canceled");
@@ -775,6 +813,55 @@ fn has_ready_local_ocr_model(
             .filter(|file| file.required)
             .all(|file| Path::new(root).join(&file.path).exists())
     })
+}
+
+impl From<platform_api::PlatformCapabilities> for PlatformCapabilitiesDto {
+    fn from(capabilities: platform_api::PlatformCapabilities) -> Self {
+        Self {
+            screen_capture: capabilities.screen_capture.into(),
+            overlay_window: capabilities.overlay_window.into(),
+            pin_window: capabilities.pin_window.into(),
+            system_ocr: capabilities.system_ocr.into(),
+            clipboard_read: capabilities.clipboard_read.into(),
+            clipboard_write: capabilities.clipboard_write.into(),
+            global_hotkey: capabilities.global_hotkey.into(),
+            file_dialog: capabilities.file_dialog.into(),
+            shared_memory: capabilities.shared_memory.into(),
+            secure_storage: capabilities.secure_storage.into(),
+        }
+    }
+}
+
+impl From<platform_api::CapabilityStatus> for CapabilityStatusDto {
+    fn from(status: platform_api::CapabilityStatus) -> Self {
+        match status {
+            platform_api::CapabilityStatus::Supported => Self {
+                status: "supported",
+                reason: None,
+                action: None,
+            },
+            platform_api::CapabilityStatus::Degraded { reason } => Self {
+                status: "degraded",
+                reason: Some(reason),
+                action: None,
+            },
+            platform_api::CapabilityStatus::NeedsSetup { reason, action } => Self {
+                status: "needsSetup",
+                reason: Some(reason),
+                action,
+            },
+            platform_api::CapabilityStatus::PermissionDenied { reason } => Self {
+                status: "permissionDenied",
+                reason: Some(reason),
+                action: None,
+            },
+            platform_api::CapabilityStatus::Unavailable { reason } => Self {
+                status: "unavailable",
+                reason: Some(reason),
+                action: None,
+            },
+        }
+    }
 }
 
 #[tauri::command]

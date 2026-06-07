@@ -12,12 +12,19 @@ ipc.workspace = true
 log.workspace = true
 model_registry.workspace = true
 ocr_engine.workspace = true
-platform_win32.workspace = true
+platform_api.workspace = true
+platform_runtime.workspace = true
 raw-window-handle = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shared_models.workspace = true
 translate_engine.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
 
 [features]
 default = []

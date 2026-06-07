@@ -183,11 +183,12 @@ impl Default for OcrSettings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TranslateSettings {
     pub provider: TranslateProvider,
     pub target_language: String,
     pub segmentation_mode: String,
+    pub smart_merge: SmartMergeSettings,
     pub auto_translate_after_ocr: bool,
     pub default_model_id: Option<String>,
 }
@@ -198,8 +199,32 @@ impl Default for TranslateSettings {
             provider: TranslateProvider::Local(crate::TranslateLocalBackend::CTranslate2),
             target_language: "zh-CN".to_owned(),
             segmentation_mode: "smart-merge".to_owned(),
+            smart_merge: SmartMergeSettings::default(),
             auto_translate_after_ocr: false,
             default_model_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SmartMergeSettings {
+    pub edge_tolerance_lines: f32,
+    pub loose_edge_tolerance_lines: f32,
+    pub height_ratio_limit: f32,
+    pub longer_line_ratio: f32,
+    pub short_last_line_ratio: f32,
+    pub inline_label_max_chars: usize,
+}
+
+impl Default for SmartMergeSettings {
+    fn default() -> Self {
+        Self {
+            edge_tolerance_lines: 1.35,
+            loose_edge_tolerance_lines: 2.4,
+            height_ratio_limit: 1.5,
+            longer_line_ratio: 1.35,
+            short_last_line_ratio: 0.72,
+            inline_label_max_chars: 32,
         }
     }
 }

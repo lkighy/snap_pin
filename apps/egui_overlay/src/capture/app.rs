@@ -7,6 +7,7 @@ use eframe::egui::{
 };
 use eframe::{App, CreationContext, Frame};
 use image::{DynamicImage, GenericImageView};
+use platform_api::NativeWindowRef;
 use raw_window_handle::HasWindowHandle;
 use shared_models::{Point, Rect, Size};
 
@@ -67,6 +68,12 @@ pub(crate) struct CaptureOverlayApp {
     translate_target_language: String,
     translate_segmentation_mode: String,
     translate_default_model_id: Option<String>,
+    smart_merge_edge_tolerance_lines: f32,
+    smart_merge_loose_edge_tolerance_lines: f32,
+    smart_merge_height_ratio_limit: f32,
+    smart_merge_longer_line_ratio: f32,
+    smart_merge_short_last_line_ratio: f32,
+    smart_merge_inline_label_max_chars: usize,
     ocr_text_font_height_ratio: f32,
     ocr_text_min_font_size: f32,
     ocr_text_max_font_size: f32,
@@ -74,6 +81,7 @@ pub(crate) struct CaptureOverlayApp {
     ocr_text_padding_y: f32,
     ocr_text_interaction_padding_x: f32,
     ocr_text_interaction_padding_y: f32,
+    owner_pid: Option<u32>,
     resident: bool,
     command_queue: Option<OverlayCommandQueue>,
     snapshot_path: Option<PathBuf>,
@@ -136,6 +144,12 @@ impl CaptureOverlayApp {
             translate_target_language: args.translate_target_language,
             translate_segmentation_mode: args.translate_segmentation_mode,
             translate_default_model_id: args.translate_default_model_id,
+            smart_merge_edge_tolerance_lines: args.smart_merge_edge_tolerance_lines,
+            smart_merge_loose_edge_tolerance_lines: args.smart_merge_loose_edge_tolerance_lines,
+            smart_merge_height_ratio_limit: args.smart_merge_height_ratio_limit,
+            smart_merge_longer_line_ratio: args.smart_merge_longer_line_ratio,
+            smart_merge_short_last_line_ratio: args.smart_merge_short_last_line_ratio,
+            smart_merge_inline_label_max_chars: args.smart_merge_inline_label_max_chars,
             ocr_text_font_height_ratio: args.ocr_text_font_height_ratio,
             ocr_text_min_font_size: args.ocr_text_min_font_size,
             ocr_text_max_font_size: args.ocr_text_max_font_size,
@@ -143,6 +157,7 @@ impl CaptureOverlayApp {
             ocr_text_padding_y: args.ocr_text_padding_y,
             ocr_text_interaction_padding_x: args.ocr_text_interaction_padding_x,
             ocr_text_interaction_padding_y: args.ocr_text_interaction_padding_y,
+            owner_pid: args.owner_pid,
             resident: args.resident,
             command_queue,
             snapshot_path: args.snapshot,
@@ -510,7 +525,12 @@ impl CaptureOverlayApp {
         self.pending_save = None;
         log::info!("opening save dialog hwnd={:?}", self.window_hwnd);
         if let Some(hwnd) = self.window_hwnd {
-            platform_win32::suspend_window_for_modal_dialog(hwnd);
+            if let Err(error) = platform_runtime::create_platform()
+                .window_ops()
+                .suspend_for_modal(NativeWindowRef::from_raw(hwnd))
+            {
+                log::warn!("failed to suspend capture window for modal dialog: {error}");
+            }
         }
 
         match self.save_selection_to_file(pending.selection) {
@@ -534,7 +554,12 @@ impl CaptureOverlayApp {
 
     fn restore_capture_window(&self, ctx: &Context) {
         if let Some(hwnd) = self.window_hwnd {
-            platform_win32::restore_window_after_modal_dialog(hwnd, true);
+            if let Err(error) = platform_runtime::create_platform()
+                .window_ops()
+                .restore_after_modal(NativeWindowRef::from_raw(hwnd), true)
+            {
+                log::warn!("failed to restore capture window after modal dialog: {error}");
+            }
         }
 
         if let Some(snapshot) = &self.snapshot_image {
@@ -592,6 +617,12 @@ impl CaptureOverlayApp {
             translate_target_language: &self.translate_target_language,
             translate_segmentation_mode: &self.translate_segmentation_mode,
             translate_default_model_id: self.translate_default_model_id.as_deref(),
+            smart_merge_edge_tolerance_lines: self.smart_merge_edge_tolerance_lines,
+            smart_merge_loose_edge_tolerance_lines: self.smart_merge_loose_edge_tolerance_lines,
+            smart_merge_height_ratio_limit: self.smart_merge_height_ratio_limit,
+            smart_merge_longer_line_ratio: self.smart_merge_longer_line_ratio,
+            smart_merge_short_last_line_ratio: self.smart_merge_short_last_line_ratio,
+            smart_merge_inline_label_max_chars: self.smart_merge_inline_label_max_chars,
             ocr_text_font_height_ratio: self.ocr_text_font_height_ratio,
             ocr_text_min_font_size: self.ocr_text_min_font_size,
             ocr_text_max_font_size: self.ocr_text_max_font_size,
@@ -599,6 +630,7 @@ impl CaptureOverlayApp {
             ocr_text_padding_y: self.ocr_text_padding_y,
             ocr_text_interaction_padding_x: self.ocr_text_interaction_padding_x,
             ocr_text_interaction_padding_y: self.ocr_text_interaction_padding_y,
+            owner_pid: self.owner_pid,
         })
         .map_err(|error| format!("{}: {error}", self.text.pin_spawn_failed))
     }
@@ -676,6 +708,10 @@ impl CaptureOverlayApp {
             let result = match queued.command {
                 OverlayCommand::Capture(command) => self.apply_capture_command(ctx, command),
                 OverlayCommand::PinSelection => self.pin_current_selection(ctx),
+                OverlayCommand::Shutdown => {
+                    ctx.send_viewport_cmd(ViewportCommand::Close);
+                    Ok(())
+                }
                 OverlayCommand::Error(error) => {
                     self.last_error = Some(error.clone());
                     Err(error)
@@ -750,6 +786,18 @@ impl CaptureOverlayApp {
         self.translate_target_language = command.translate_target_language;
         self.translate_segmentation_mode = command.translate_segmentation_mode;
         self.translate_default_model_id = empty_to_none(command.translate_default_model_id);
+        self.smart_merge_edge_tolerance_lines =
+            command.smart_merge_edge_tolerance_lines.clamp(0.2, 6.0);
+        self.smart_merge_loose_edge_tolerance_lines = command
+            .smart_merge_loose_edge_tolerance_lines
+            .clamp(0.2, 8.0);
+        self.smart_merge_height_ratio_limit =
+            command.smart_merge_height_ratio_limit.clamp(1.0, 4.0);
+        self.smart_merge_longer_line_ratio = command.smart_merge_longer_line_ratio.clamp(1.0, 4.0);
+        self.smart_merge_short_last_line_ratio =
+            command.smart_merge_short_last_line_ratio.clamp(0.1, 1.0);
+        self.smart_merge_inline_label_max_chars =
+            command.smart_merge_inline_label_max_chars.clamp(1, 120);
         self.ocr_text_font_height_ratio = command.ocr_text_font_height_ratio.clamp(0.1, 2.0);
         self.ocr_text_min_font_size = command.ocr_text_min_font_size.clamp(4.0, 96.0);
         self.ocr_text_max_font_size = command

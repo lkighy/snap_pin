@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use core_service::CoreService;
+use platform_api::AppPlatform;
 use shared_models::{CoreCommand, CoreEvent, Settings};
 use tauri::AppHandle;
 
@@ -20,18 +23,35 @@ impl Default for ShellState {
 }
 
 impl ShellState {
+    pub fn with_platform(platform: Arc<dyn AppPlatform>) -> Self {
+        Self {
+            core: CoreService::with_platform(platform),
+            ipc: DesktopIpcBridge::default(),
+        }
+    }
+
     pub fn from_store(app: &AppHandle) -> Self {
         let mut state = Self::default();
+        state.load_from_store(app);
+        state
+    }
+
+    pub fn from_store_with_platform(app: &AppHandle, platform: Arc<dyn AppPlatform>) -> Self {
+        let mut state = Self::with_platform(platform);
+        state.load_from_store(app);
+        state
+    }
+
+    fn load_from_store(&mut self, app: &AppHandle) {
         if let Some(settings) = store::load(app) {
             log::info!("applying persisted settings");
-            state.update_settings(Settings::from(settings));
+            self.update_settings(Settings::from(settings));
         } else {
             log::info!("using default settings");
         }
         for model in models::load(app) {
-            state.dispatch(CoreCommand::RegisterModel(model));
+            self.dispatch(CoreCommand::RegisterModel(model));
         }
-        state
     }
 
     pub fn boot_summary(&self) -> String {
@@ -91,6 +111,10 @@ impl ShellState {
 
     pub fn local_translate_runtime_status(&self) -> &'static str {
         self.core.local_translate_runtime_status()
+    }
+
+    pub fn platform_capabilities(&self) -> platform_api::PlatformCapabilities {
+        self.core.platform_capabilities()
     }
 
     pub fn model_manifests(&self) -> &[shared_models::ModelManifest] {

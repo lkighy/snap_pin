@@ -10,9 +10,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ab_glyph::{FontArc, PxScale};
 use image::{DynamicImage, ImageBuffer, Rgba, RgbaImage};
 use imageproc::drawing::{draw_text_mut, text_size};
-use platform_win32::{
-    CaptureWindowRegion, ClipboardPayload, HotkeyListener, HotkeyRegistration, NamedSharedMemory,
-    listen_for_hotkey,
+use platform_api::{
+    CaptureWindowRegion, ClipboardPayload, HotkeyRegistration, HotkeyToken, SharedMemoryHandle,
 };
 use serde::{Deserialize, Serialize};
 use shared_models::{
@@ -30,6 +29,7 @@ const OVERLAY_CONTROL_PORT: u16 = 47232;
 const OVERLAY_CONTROL_PROTOCOL: u32 = 2;
 const OVERLAY_READY_TIMEOUT: Duration = Duration::from_millis(15_000);
 const OVERLAY_COMMAND_TIMEOUT: Duration = Duration::from_millis(5_500);
+const OVERLAY_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(1_500);
 const RECENT_MAPPING_LIMIT: usize = 4;
 const CLIPBOARD_TEXT_MAX_CHARS: usize = 20_000;
 const CLIPBOARD_TEXT_MAX_WIDTH: u32 = 900;
@@ -42,10 +42,11 @@ const CLIPBOARD_PIN_DEFAULT_Y: f32 = 140.0;
 #[derive(Default)]
 pub struct CaptureOverlayRuntime {
     process: Option<Child>,
-    recent_mappings: VecDeque<NamedSharedMemory>,
+    pin_processes: Vec<Child>,
+    recent_mappings: VecDeque<SharedMemoryHandle>,
 }
 
-pub struct PinHotkeyListener(HotkeyListener);
+pub struct PinHotkeyListener(Box<dyn HotkeyToken>);
 
 struct PreparedPinImage {
     path: PathBuf,
@@ -73,6 +74,12 @@ struct PinWindowLaunch<'a> {
     translate_target_language: &'a str,
     translate_segmentation_mode: &'a str,
     translate_default_model_id: Option<&'a str>,
+    smart_merge_edge_tolerance_lines: f32,
+    smart_merge_loose_edge_tolerance_lines: f32,
+    smart_merge_height_ratio_limit: f32,
+    smart_merge_longer_line_ratio: f32,
+    smart_merge_short_last_line_ratio: f32,
+    smart_merge_inline_label_max_chars: usize,
     ocr_text_font_height_ratio: f32,
     ocr_text_min_font_size: f32,
     ocr_text_max_font_size: f32,
@@ -89,21 +96,109 @@ enum OverlayPinHotkeyResult {
 }
 
 impl CaptureOverlayRuntime {
-    fn keep_mapping(&mut self, mapping: NamedSharedMemory) {
+    fn keep_mapping(&mut self, mapping: SharedMemoryHandle) {
         self.recent_mappings.push_back(mapping);
         while self.recent_mappings.len() > RECENT_MAPPING_LIMIT {
             self.recent_mappings.pop_front();
+        }
+    }
+
+    fn track_pin_process(&mut self, process: Child) {
+        self.prune_pin_processes();
+        log::info!("tracking pin window process pid={}", process.id());
+        self.pin_processes.push(process);
+    }
+
+    fn prune_pin_processes(&mut self) {
+        self.pin_processes
+            .retain_mut(|process| match process.try_wait() {
+                Ok(Some(status)) => {
+                    log::info!(
+                        "tracked pin window process exited pid={} status={status}",
+                        process.id()
+                    );
+                    false
+                }
+                Ok(None) => true,
+                Err(error) => {
+                    log::warn!(
+                        "failed to inspect tracked pin window process pid={}: {error}",
+                        process.id()
+                    );
+                    false
+                }
+            });
+    }
+
+    fn stop_resident_overlay(&mut self) {
+        if self.process.is_none() {
+            return;
+        }
+
+        log::info!("requesting resident overlay shutdown");
+        if let Err(error) = send_shutdown_command() {
+            log::warn!("resident overlay shutdown command failed: {error}");
+        } else if let Err(error) = wait_for_overlay_server_shutdown(OVERLAY_SHUTDOWN_TIMEOUT) {
+            log::warn!("resident overlay did not close after shutdown command: {error}");
+        }
+
+        if let Some(mut process) = self.process.take() {
+            match process.try_wait() {
+                Ok(Some(status)) => {
+                    log::info!(
+                        "resident overlay process already exited pid={} status={status}",
+                        process.id()
+                    );
+                }
+                Ok(None) => {
+                    log::info!("stopping resident overlay process pid={}", process.id());
+                    let _ = process.kill();
+                    let _ = process.wait();
+                }
+                Err(error) => {
+                    log::warn!(
+                        "failed to inspect resident overlay process pid={}: {error}",
+                        process.id()
+                    );
+                    let _ = process.kill();
+                    let _ = process.wait();
+                }
+            }
+        }
+    }
+
+    fn stop_pin_processes(&mut self) {
+        self.prune_pin_processes();
+        for mut process in self.pin_processes.drain(..) {
+            match process.try_wait() {
+                Ok(Some(status)) => {
+                    log::info!(
+                        "tracked pin window process already exited pid={} status={status}",
+                        process.id()
+                    );
+                }
+                Ok(None) => {
+                    log::info!("stopping tracked pin window process pid={}", process.id());
+                    let _ = process.kill();
+                    let _ = process.wait();
+                }
+                Err(error) => {
+                    log::warn!(
+                        "failed to inspect tracked pin window process pid={}: {error}",
+                        process.id()
+                    );
+                    let _ = process.kill();
+                    let _ = process.wait();
+                }
+            }
         }
     }
 }
 
 impl Drop for CaptureOverlayRuntime {
     fn drop(&mut self) {
-        if let Some(mut process) = self.process.take() {
-            log::info!("stopping resident overlay process pid={}", process.id());
-            let _ = process.kill();
-            let _ = process.wait();
-        }
+        self.stop_resident_overlay();
+        self.stop_pin_processes();
     }
 }
 
@@ -202,19 +297,24 @@ pub fn register_capture_hotkey_for_settings(
     );
     let registration = HotkeyRegistration::new("capture", settings.hotkeys.capture.clone());
     let app_handle = app.clone();
-    let managed = app.state::<Mutex<Option<HotkeyListener>>>();
+    let managed = app.state::<Mutex<Option<Box<dyn HotkeyToken>>>>();
     let mut guard = managed
         .lock()
         .map_err(|_| "hotkey listener lock poisoned".to_owned())?;
     *guard = None;
 
-    let listener = listen_for_hotkey(registration, move |_| {
-        log::info!("capture hotkey triggered");
-        if let Err(error) = launch_capture_overlay(&app_handle) {
-            log::error!("failed to launch capture overlay from hotkey: {error}");
-        }
-    })
-    .map_err(|error| error.to_string())?;
+    let listener = platform_runtime::create_platform()
+        .global_hotkey()
+        .register(
+            registration,
+            Box::new(move |_| {
+                log::info!("capture hotkey triggered");
+                if let Err(error) = launch_capture_overlay(&app_handle) {
+                    log::error!("failed to launch capture overlay from hotkey: {error}");
+                }
+            }),
+        )
+        .map_err(|error| error.to_string())?;
 
     *guard = Some(listener);
     log::info!("capture hotkey registered");
@@ -238,23 +338,28 @@ pub fn register_clipboard_pin_hotkey_for_settings(
         .map_err(|_| "pin hotkey listener lock poisoned".to_owned())?;
     *guard = None;
 
-    let listener = listen_for_hotkey(registration, move |_| {
-        log::info!("pin hotkey triggered");
-        match try_pin_selection_in_overlay() {
-            OverlayPinHotkeyResult::Pinned => {
-                log::info!("pin hotkey consumed by active capture overlay");
-            }
-            OverlayPinHotkeyResult::Inactive => {
-                if let Err(error) = pin_clipboard_content(&app_handle) {
-                    log::error!("failed to pin clipboard content from hotkey: {error}");
+    let listener = platform_runtime::create_platform()
+        .global_hotkey()
+        .register(
+            registration,
+            Box::new(move |_| {
+                log::info!("pin hotkey triggered");
+                match try_pin_selection_in_overlay() {
+                    OverlayPinHotkeyResult::Pinned => {
+                        log::info!("pin hotkey consumed by active capture overlay");
+                    }
+                    OverlayPinHotkeyResult::Inactive => {
+                        if let Err(error) = pin_clipboard_content(&app_handle) {
+                            log::error!("failed to pin clipboard content from hotkey: {error}");
+                        }
+                    }
+                    OverlayPinHotkeyResult::ActiveWithoutSelection => {
+                        log::info!("capture overlay is active but has no selection to pin");
+                    }
                 }
-            }
-            OverlayPinHotkeyResult::ActiveWithoutSelection => {
-                log::info!("capture overlay is active but has no selection to pin");
-            }
-        }
-    })
-    .map_err(|error| error.to_string())?;
+            }),
+        )
+        .map_err(|error| error.to_string())?;
 
     *guard = Some(PinHotkeyListener(listener));
     log::info!("pin hotkey registered");
@@ -276,8 +381,14 @@ fn ensure_overlay_resident_locked(
     runtime: &mut CaptureOverlayRuntime,
 ) -> Result<(), String> {
     if overlay_server_ready() {
-        log::info!("resident overlay server already ready");
-        return Ok(());
+        if runtime.process.is_some() {
+            log::info!("resident overlay server already ready");
+            return Ok(());
+        }
+
+        log::warn!("resident overlay server is ready but untracked; requesting shutdown");
+        send_shutdown_command()?;
+        wait_for_overlay_server_shutdown(OVERLAY_SHUTDOWN_TIMEOUT)?;
     }
 
     if let Some(process) = runtime.process.as_mut() {
@@ -302,7 +413,8 @@ fn ensure_overlay_resident_locked(
         let model_registry_path = models::models_path(app)
             .ok()
             .map(|path| path.to_string_lossy().into_owned());
-        let args = resident_overlay_args(settings, model_registry_path.as_deref());
+        let args =
+            resident_overlay_args(settings, model_registry_path.as_deref(), std::process::id());
         log::info!("starting resident overlay via {}", launch.description());
         let mut command = launch.command(args);
         command
@@ -390,6 +502,11 @@ fn try_pin_selection_in_overlay() -> OverlayPinHotkeyResult {
     }
 }
 
+fn send_shutdown_command() -> Result<(), String> {
+    let command = format!("{{\"kind\":\"shutdown\",\"protocol\":{OVERLAY_CONTROL_PROTOCOL}}}");
+    send_overlay_command(&command, "shutdown")
+}
+
 fn send_overlay_command(json: &str, label: &str) -> Result<(), String> {
     let mut stream = TcpStream::connect(control_addr())
         .map_err(|error| format!("failed to connect to resident screenshot overlay: {error}"))?;
@@ -433,12 +550,34 @@ fn send_overlay_command(json: &str, label: &str) -> Result<(), String> {
     }
 }
 
+fn wait_for_overlay_server_shutdown(timeout: Duration) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if !overlay_server_ready() {
+            log::info!(
+                "resident overlay closed after {} ms",
+                start.elapsed().as_millis()
+            );
+            return Ok(());
+        }
+
+        thread::sleep(Duration::from_millis(30));
+    }
+
+    Err(format!(
+        "resident screenshot overlay did not close within {} ms",
+        timeout.as_millis()
+    ))
+}
+
 fn pin_clipboard_content(app: &AppHandle) -> Result<(), String> {
     let settings = current_settings(app)?;
     let model_registry_path = models::models_path(app)
         .ok()
         .map(|path| path.to_string_lossy().into_owned());
-    let payload = platform_win32::read_clipboard_payload()
+    let payload = platform_runtime::create_platform()
+        .clipboard()
+        .read()
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
     let image = clipboard_payload_to_pin_image(app, payload)?;
     let ocr_provider = ocr_provider_name(&settings.ocr.provider);
@@ -466,6 +605,18 @@ fn pin_clipboard_content(app: &AppHandle) -> Result<(), String> {
             translate_target_language: &settings.translate.target_language,
             translate_segmentation_mode: &settings.translate.segmentation_mode,
             translate_default_model_id: settings.translate.default_model_id.as_deref(),
+            smart_merge_edge_tolerance_lines: settings.translate.smart_merge.edge_tolerance_lines,
+            smart_merge_loose_edge_tolerance_lines: settings
+                .translate
+                .smart_merge
+                .loose_edge_tolerance_lines,
+            smart_merge_height_ratio_limit: settings.translate.smart_merge.height_ratio_limit,
+            smart_merge_longer_line_ratio: settings.translate.smart_merge.longer_line_ratio,
+            smart_merge_short_last_line_ratio: settings.translate.smart_merge.short_last_line_ratio,
+            smart_merge_inline_label_max_chars: settings
+                .translate
+                .smart_merge
+                .inline_label_max_chars,
             ocr_text_font_height_ratio: settings.pin.ocr_text.font_height_ratio,
             ocr_text_min_font_size: settings.pin.ocr_text.min_font_size,
             ocr_text_max_font_size: settings.pin.ocr_text.max_font_size,
@@ -701,6 +852,18 @@ fn spawn_pin_window_from_desktop(
         launch.translate_segmentation_mode.to_owned(),
         "--translate-default-model-id".to_owned(),
         launch.translate_default_model_id.unwrap_or("").to_owned(),
+        "--smart-merge-edge-tolerance-lines".to_owned(),
+        launch.smart_merge_edge_tolerance_lines.to_string(),
+        "--smart-merge-loose-edge-tolerance-lines".to_owned(),
+        launch.smart_merge_loose_edge_tolerance_lines.to_string(),
+        "--smart-merge-height-ratio-limit".to_owned(),
+        launch.smart_merge_height_ratio_limit.to_string(),
+        "--smart-merge-longer-line-ratio".to_owned(),
+        launch.smart_merge_longer_line_ratio.to_string(),
+        "--smart-merge-short-last-line-ratio".to_owned(),
+        launch.smart_merge_short_last_line_ratio.to_string(),
+        "--smart-merge-inline-label-max-chars".to_owned(),
+        launch.smart_merge_inline_label_max_chars.to_string(),
         "--ocr-text-font-height-ratio".to_owned(),
         launch.ocr_text_font_height_ratio.to_string(),
         "--ocr-text-min-font-size".to_owned(),
@@ -715,6 +878,8 @@ fn spawn_pin_window_from_desktop(
         launch.ocr_text_interaction_padding_x.to_string(),
         "--ocr-text-interaction-padding-y".to_owned(),
         launch.ocr_text_interaction_padding_y.to_string(),
+        "--owner-pid".to_owned(),
+        std::process::id().to_string(),
     ];
     let overlay = overlay_launch(app)?;
     log::info!(
@@ -733,6 +898,10 @@ fn spawn_pin_window_from_desktop(
         .spawn()
         .map_err(|error| format!("failed to launch clipboard pin window: {error}"))?;
     log::info!("clipboard pin window spawned pid={}", child.id());
+    app.state::<Mutex<CaptureOverlayRuntime>>()
+        .lock()
+        .map_err(|_| "overlay runtime lock poisoned".to_owned())?
+        .track_pin_process(child);
     Ok(())
 }
 
@@ -747,12 +916,18 @@ fn control_addr() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], OVERLAY_CONTROL_PORT))
 }
 
-fn resident_overlay_args(settings: &Settings, model_registry_path: Option<&str>) -> Vec<String> {
+fn resident_overlay_args(
+    settings: &Settings,
+    model_registry_path: Option<&str>,
+    owner_pid: u32,
+) -> Vec<String> {
     vec![
         "--capture".to_owned(),
         "--resident".to_owned(),
         "--control-port".to_owned(),
         OVERLAY_CONTROL_PORT.to_string(),
+        "--owner-pid".to_owned(),
+        owner_pid.to_string(),
         "--language".to_owned(),
         settings.interface.language.clone(),
         "--mask-opacity".to_owned(),
@@ -801,6 +976,38 @@ fn resident_overlay_args(settings: &Settings, model_registry_path: Option<&str>)
             .default_model_id
             .clone()
             .unwrap_or_default(),
+        "--smart-merge-edge-tolerance-lines".to_owned(),
+        settings
+            .translate
+            .smart_merge
+            .edge_tolerance_lines
+            .to_string(),
+        "--smart-merge-loose-edge-tolerance-lines".to_owned(),
+        settings
+            .translate
+            .smart_merge
+            .loose_edge_tolerance_lines
+            .to_string(),
+        "--smart-merge-height-ratio-limit".to_owned(),
+        settings
+            .translate
+            .smart_merge
+            .height_ratio_limit
+            .to_string(),
+        "--smart-merge-longer-line-ratio".to_owned(),
+        settings.translate.smart_merge.longer_line_ratio.to_string(),
+        "--smart-merge-short-last-line-ratio".to_owned(),
+        settings
+            .translate
+            .smart_merge
+            .short_last_line_ratio
+            .to_string(),
+        "--smart-merge-inline-label-max-chars".to_owned(),
+        settings
+            .translate
+            .smart_merge
+            .inline_label_max_chars
+            .to_string(),
         "--ocr-text-font-height-ratio".to_owned(),
         settings.pin.ocr_text.font_height_ratio.to_string(),
         "--ocr-text-min-font-size".to_owned(),
@@ -846,6 +1053,12 @@ struct OverlayCaptureCommand {
     translate_target_language: String,
     translate_segmentation_mode: String,
     translate_default_model_id: Option<String>,
+    smart_merge_edge_tolerance_lines: f32,
+    smart_merge_loose_edge_tolerance_lines: f32,
+    smart_merge_height_ratio_limit: f32,
+    smart_merge_longer_line_ratio: f32,
+    smart_merge_short_last_line_ratio: f32,
+    smart_merge_inline_label_max_chars: usize,
     ocr_text_font_height_ratio: f32,
     ocr_text_min_font_size: f32,
     ocr_text_max_font_size: f32,
@@ -895,6 +1108,18 @@ impl OverlayCaptureCommand {
             translate_target_language: settings.translate.target_language.clone(),
             translate_segmentation_mode: settings.translate.segmentation_mode.clone(),
             translate_default_model_id: settings.translate.default_model_id.clone(),
+            smart_merge_edge_tolerance_lines: settings.translate.smart_merge.edge_tolerance_lines,
+            smart_merge_loose_edge_tolerance_lines: settings
+                .translate
+                .smart_merge
+                .loose_edge_tolerance_lines,
+            smart_merge_height_ratio_limit: settings.translate.smart_merge.height_ratio_limit,
+            smart_merge_longer_line_ratio: settings.translate.smart_merge.longer_line_ratio,
+            smart_merge_short_last_line_ratio: settings.translate.smart_merge.short_last_line_ratio,
+            smart_merge_inline_label_max_chars: settings
+                .translate
+                .smart_merge
+                .inline_label_max_chars,
             ocr_text_font_height_ratio: settings.pin.ocr_text.font_height_ratio,
             ocr_text_min_font_size: settings.pin.ocr_text.min_font_size,
             ocr_text_max_font_size: settings.pin.ocr_text.max_font_size,

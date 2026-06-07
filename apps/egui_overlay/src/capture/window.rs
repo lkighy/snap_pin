@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use eframe::egui::{Context, Pos2, Vec2, ViewportCommand, WindowLevel};
+use platform_api::NativeWindowRef;
 use raw_window_handle::RawWindowHandle;
 use shared_models::{Point, Rect, Size};
 
@@ -15,14 +16,18 @@ pub(crate) fn park_resident_window(ctx: &Context, hwnd: Option<isize>) {
     // Keep the resident window alive but invisible to the user. Fully hidden
     // windows may stop receiving repaint wakeups, leaving future commands queued.
     if let Some(hwnd) = hwnd {
-        platform_win32::park_window(
-            hwnd,
-            Rect::new(
-                Point::new(RESIDENT_IDLE_X, RESIDENT_IDLE_Y),
-                Size::new(RESIDENT_IDLE_SIZE, RESIDENT_IDLE_SIZE),
-            ),
-            true,
-        );
+        if let Err(error) = platform_runtime::create_platform()
+            .window_ops()
+            .park_window(
+                NativeWindowRef::from_raw(hwnd),
+                Rect::new(
+                    Point::new(RESIDENT_IDLE_X, RESIDENT_IDLE_Y),
+                    Size::new(RESIDENT_IDLE_SIZE, RESIDENT_IDLE_SIZE),
+                ),
+            )
+        {
+            log::warn!("failed to park resident capture window: {error}");
+        }
     }
     ctx.send_viewport_cmd(ViewportCommand::OuterPosition(Pos2::new(
         RESIDENT_IDLE_X,

@@ -18,6 +18,12 @@ pub(crate) struct PinWindowLaunch<'a> {
     pub(crate) translate_target_language: &'a str,
     pub(crate) translate_segmentation_mode: &'a str,
     pub(crate) translate_default_model_id: Option<&'a str>,
+    pub(crate) smart_merge_edge_tolerance_lines: f32,
+    pub(crate) smart_merge_loose_edge_tolerance_lines: f32,
+    pub(crate) smart_merge_height_ratio_limit: f32,
+    pub(crate) smart_merge_longer_line_ratio: f32,
+    pub(crate) smart_merge_short_last_line_ratio: f32,
+    pub(crate) smart_merge_inline_label_max_chars: usize,
     pub(crate) ocr_text_font_height_ratio: f32,
     pub(crate) ocr_text_min_font_size: f32,
     pub(crate) ocr_text_max_font_size: f32,
@@ -25,12 +31,13 @@ pub(crate) struct PinWindowLaunch<'a> {
     pub(crate) ocr_text_padding_y: f32,
     pub(crate) ocr_text_interaction_padding_x: f32,
     pub(crate) ocr_text_interaction_padding_y: f32,
+    pub(crate) owner_pid: Option<u32>,
 }
 
 pub(crate) fn spawn_pin_window(launch: &PinWindowLaunch<'_>) -> Result<(), String> {
     let current_exe = std::env::current_exe().map_err(|error| error.to_string())?;
     log::info!(
-        "spawning pin window exe={} image={} x={} y={} width={} height={} opacity={} zoom_step={} always_on_top={}",
+        "spawning pin window exe={} image={} x={} y={} width={} height={} opacity={} zoom_step={} always_on_top={} owner_pid={:?}",
         current_exe.display(),
         launch.image_path.display(),
         launch.x,
@@ -39,9 +46,11 @@ pub(crate) fn spawn_pin_window(launch: &PinWindowLaunch<'_>) -> Result<(), Strin
         launch.height,
         launch.opacity,
         launch.zoom_step,
-        launch.always_on_top
+        launch.always_on_top,
+        launch.owner_pid
     );
-    let child = std::process::Command::new(current_exe)
+    let mut command = std::process::Command::new(current_exe);
+    command
         .arg("--pin")
         .arg("--image")
         .arg(launch.image_path)
@@ -79,6 +88,18 @@ pub(crate) fn spawn_pin_window(launch: &PinWindowLaunch<'_>) -> Result<(), Strin
         .arg(launch.translate_segmentation_mode)
         .arg("--translate-default-model-id")
         .arg(launch.translate_default_model_id.unwrap_or(""))
+        .arg("--smart-merge-edge-tolerance-lines")
+        .arg(format!("{}", launch.smart_merge_edge_tolerance_lines))
+        .arg("--smart-merge-loose-edge-tolerance-lines")
+        .arg(format!("{}", launch.smart_merge_loose_edge_tolerance_lines))
+        .arg("--smart-merge-height-ratio-limit")
+        .arg(format!("{}", launch.smart_merge_height_ratio_limit))
+        .arg("--smart-merge-longer-line-ratio")
+        .arg(format!("{}", launch.smart_merge_longer_line_ratio))
+        .arg("--smart-merge-short-last-line-ratio")
+        .arg(format!("{}", launch.smart_merge_short_last_line_ratio))
+        .arg("--smart-merge-inline-label-max-chars")
+        .arg(format!("{}", launch.smart_merge_inline_label_max_chars))
         .arg("--ocr-text-font-height-ratio")
         .arg(format!("{}", launch.ocr_text_font_height_ratio))
         .arg("--ocr-text-min-font-size")
@@ -92,9 +113,12 @@ pub(crate) fn spawn_pin_window(launch: &PinWindowLaunch<'_>) -> Result<(), Strin
         .arg("--ocr-text-interaction-padding-x")
         .arg(format!("{}", launch.ocr_text_interaction_padding_x))
         .arg("--ocr-text-interaction-padding-y")
-        .arg(format!("{}", launch.ocr_text_interaction_padding_y))
-        .spawn()
-        .map_err(|error| error.to_string())?;
+        .arg(format!("{}", launch.ocr_text_interaction_padding_y));
+    if let Some(owner_pid) = launch.owner_pid {
+        command.arg("--owner-pid").arg(owner_pid.to_string());
+    }
+
+    let child = command.spawn().map_err(|error| error.to_string())?;
     log::info!("pin window spawned pid={}", child.id());
     Ok(())
 }

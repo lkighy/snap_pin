@@ -34,6 +34,12 @@ pub(crate) struct CliArgs {
     pub(crate) translate_target_language: String,
     pub(crate) translate_segmentation_mode: String,
     pub(crate) translate_default_model_id: Option<String>,
+    pub(crate) smart_merge_edge_tolerance_lines: f32,
+    pub(crate) smart_merge_loose_edge_tolerance_lines: f32,
+    pub(crate) smart_merge_height_ratio_limit: f32,
+    pub(crate) smart_merge_longer_line_ratio: f32,
+    pub(crate) smart_merge_short_last_line_ratio: f32,
+    pub(crate) smart_merge_inline_label_max_chars: usize,
     pub(crate) ocr_text_font_height_ratio: f32,
     pub(crate) ocr_text_min_font_size: f32,
     pub(crate) ocr_text_max_font_size: f32,
@@ -43,6 +49,7 @@ pub(crate) struct CliArgs {
     pub(crate) ocr_text_interaction_padding_y: f32,
     pub(crate) resident: bool,
     pub(crate) control_port: u16,
+    pub(crate) owner_pid: Option<u32>,
 }
 
 impl CliArgs {
@@ -79,6 +86,12 @@ impl CliArgs {
             translate_target_language: "zh-CN".to_owned(),
             translate_segmentation_mode: "smart-merge".to_owned(),
             translate_default_model_id: None,
+            smart_merge_edge_tolerance_lines: 1.35,
+            smart_merge_loose_edge_tolerance_lines: 2.4,
+            smart_merge_height_ratio_limit: 1.5,
+            smart_merge_longer_line_ratio: 1.35,
+            smart_merge_short_last_line_ratio: 0.72,
+            smart_merge_inline_label_max_chars: 32,
             ocr_text_font_height_ratio: 0.46,
             ocr_text_min_font_size: 6.0,
             ocr_text_max_font_size: 42.0,
@@ -88,6 +101,7 @@ impl CliArgs {
             ocr_text_interaction_padding_y: 4.0,
             resident: false,
             control_port: 47232,
+            owner_pid: None,
         };
 
         while let Some(arg) = args.next() {
@@ -109,6 +123,9 @@ impl CliArgs {
                 "--resident" => parsed.resident = true,
                 "--control-port" => {
                     parsed.control_port = parse_next(&mut args, parsed.control_port)
+                }
+                "--owner-pid" => {
+                    parsed.owner_pid = args.next().and_then(|value| value.parse().ok())
                 }
                 "--mask-opacity" => {
                     parsed.mask_opacity = parse_next(&mut args, parsed.mask_opacity)
@@ -177,6 +194,30 @@ impl CliArgs {
                     parsed.translate_default_model_id =
                         args.next().filter(|value| !value.is_empty())
                 }
+                "--smart-merge-edge-tolerance-lines" => {
+                    parsed.smart_merge_edge_tolerance_lines =
+                        parse_next(&mut args, parsed.smart_merge_edge_tolerance_lines)
+                }
+                "--smart-merge-loose-edge-tolerance-lines" => {
+                    parsed.smart_merge_loose_edge_tolerance_lines =
+                        parse_next(&mut args, parsed.smart_merge_loose_edge_tolerance_lines)
+                }
+                "--smart-merge-height-ratio-limit" => {
+                    parsed.smart_merge_height_ratio_limit =
+                        parse_next(&mut args, parsed.smart_merge_height_ratio_limit)
+                }
+                "--smart-merge-longer-line-ratio" => {
+                    parsed.smart_merge_longer_line_ratio =
+                        parse_next(&mut args, parsed.smart_merge_longer_line_ratio)
+                }
+                "--smart-merge-short-last-line-ratio" => {
+                    parsed.smart_merge_short_last_line_ratio =
+                        parse_next(&mut args, parsed.smart_merge_short_last_line_ratio)
+                }
+                "--smart-merge-inline-label-max-chars" => {
+                    parsed.smart_merge_inline_label_max_chars =
+                        parse_next(&mut args, parsed.smart_merge_inline_label_max_chars)
+                }
                 "--ocr-text-font-height-ratio" => {
                     parsed.ocr_text_font_height_ratio =
                         parse_next(&mut args, parsed.ocr_text_font_height_ratio)
@@ -213,6 +254,18 @@ impl CliArgs {
         parsed.pin_zoom_step = parsed.pin_zoom_step.clamp(0.05, 0.5);
         parsed.pin_min_width = parsed.pin_min_width.clamp(16.0, 2048.0);
         parsed.pin_min_height = parsed.pin_min_height.clamp(16.0, 2048.0);
+        parsed.smart_merge_edge_tolerance_lines =
+            parsed.smart_merge_edge_tolerance_lines.clamp(0.2, 6.0);
+        parsed.smart_merge_loose_edge_tolerance_lines = parsed
+            .smart_merge_loose_edge_tolerance_lines
+            .clamp(0.2, 8.0);
+        parsed.smart_merge_height_ratio_limit =
+            parsed.smart_merge_height_ratio_limit.clamp(1.0, 4.0);
+        parsed.smart_merge_longer_line_ratio = parsed.smart_merge_longer_line_ratio.clamp(1.0, 4.0);
+        parsed.smart_merge_short_last_line_ratio =
+            parsed.smart_merge_short_last_line_ratio.clamp(0.1, 1.0);
+        parsed.smart_merge_inline_label_max_chars =
+            parsed.smart_merge_inline_label_max_chars.clamp(1, 120);
         parsed.ocr_text_font_height_ratio = parsed.ocr_text_font_height_ratio.clamp(0.1, 2.0);
         parsed.ocr_text_min_font_size = parsed.ocr_text_min_font_size.clamp(4.0, 96.0);
         parsed.ocr_text_max_font_size = parsed

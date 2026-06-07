@@ -58,6 +58,7 @@ pub(crate) struct PinWindowApp {
     translate_provider: TranslateProvider,
     translate_target_language: String,
     translate_segmentation_mode: PinTranslationSegmentationMode,
+    smart_merge_settings: SmartMergeSettings,
     translate_default_model_id: Option<String>,
     translate_receiver: Option<mpsc::Receiver<Result<Vec<PinBlockTranslation>, String>>>,
     block_translations: Vec<PinBlockTranslation>,
@@ -96,6 +97,14 @@ impl PinWindowApp {
             translate_segmentation_mode: PinTranslationSegmentationMode::from_name(
                 &args.translate_segmentation_mode,
             ),
+            smart_merge_settings: SmartMergeSettings {
+                edge_tolerance_lines: args.smart_merge_edge_tolerance_lines,
+                loose_edge_tolerance_lines: args.smart_merge_loose_edge_tolerance_lines,
+                height_ratio_limit: args.smart_merge_height_ratio_limit,
+                longer_line_ratio: args.smart_merge_longer_line_ratio,
+                short_last_line_ratio: args.smart_merge_short_last_line_ratio,
+                inline_label_max_chars: args.smart_merge_inline_label_max_chars,
+            },
             translate_default_model_id: args.translate_default_model_id,
             translate_receiver: None,
             block_translations: Vec::new(),
@@ -773,7 +782,7 @@ impl PinWindowApp {
                 translatable_blocks_by_ocr_block(result)
             }
             PinTranslationSegmentationMode::SmartMerge => {
-                translatable_blocks_by_smart_merge(result)
+                translatable_blocks_by_smart_merge(result, self.smart_merge_settings)
             }
             PinTranslationSegmentationMode::FullRegion => {
                 translatable_blocks_by_full_region(result)
@@ -851,7 +860,10 @@ impl PinWindowApp {
         };
 
         let default_name = capture_file_name();
-        let image_path = match platform_win32::prompt_save_png_path(&default_name) {
+        let image_path = match platform_runtime::create_platform()
+            .file_dialog()
+            .save_png_path(&default_name)
+        {
             Ok(Some(path)) => path,
             Ok(None) => {
                 log::info!("pin save path prompt canceled");
@@ -952,7 +964,10 @@ fn translatable_blocks_by_full_region(result: &OcrResult) -> Vec<PinTranslatable
     vec![translatable_block_from_group(0, &blocks)]
 }
 
-fn translatable_blocks_by_smart_merge(result: &OcrResult) -> Vec<PinTranslatableBlock> {
+fn translatable_blocks_by_smart_merge(
+    result: &OcrResult,
+    settings: SmartMergeSettings,
+) -> Vec<PinTranslatableBlock> {
     let mut units = Vec::new();
     let mut group: Vec<(usize, &OcrTextBlock)> = Vec::new();
 
@@ -963,7 +978,7 @@ fn translatable_blocks_by_smart_merge(result: &OcrResult) -> Vec<PinTranslatable
 
         let should_start_new = group
             .last()
-            .is_some_and(|(_, previous)| !should_merge_ocr_blocks(previous, block));
+            .is_some_and(|_| !should_merge_ocr_block_into_group(&group, block, settings));
         if should_start_new {
             units.push(translatable_block_from_group(units.len(), &group));
             group.clear();
@@ -1006,20 +1021,47 @@ fn translatable_block_from_group(
     }
 }
 
-fn should_merge_ocr_blocks(previous: &OcrTextBlock, next: &OcrTextBlock) -> bool {
+#[derive(Debug, Clone, Copy)]
+struct SmartMergeSettings {
+    edge_tolerance_lines: f32,
+    loose_edge_tolerance_lines: f32,
+    height_ratio_limit: f32,
+    longer_line_ratio: f32,
+    short_last_line_ratio: f32,
+    inline_label_max_chars: usize,
+}
+
+impl Default for SmartMergeSettings {
+    fn default() -> Self {
+        Self {
+            edge_tolerance_lines: 1.35,
+            loose_edge_tolerance_lines: 2.4,
+            height_ratio_limit: 1.5,
+            longer_line_ratio: 1.35,
+            short_last_line_ratio: 0.72,
+            inline_label_max_chars: 32,
+        }
+    }
+}
+
+fn should_merge_ocr_block_into_group(
+    group: &[(usize, &OcrTextBlock)],
+    next: &OcrTextBlock,
+    settings: SmartMergeSettings,
+) -> bool {
+    let Some((_, previous)) = group.last() else {
+        return true;
+    };
+
     let previous_text = previous.text.trim();
     let next_text = next.text.trim();
-    if previous_text.is_empty() || next_text.is_empty() || ends_sentence(previous_text) {
+    if previous_text.is_empty() || next_text.is_empty() {
         return false;
     }
 
     let previous_bounds = previous.bounds;
     let next_bounds = next.bounds;
-    let line_height = previous_bounds
-        .size
-        .height
-        .max(next_bounds.size.height)
-        .max(1.0);
+    let line_height = merged_line_height(previous_bounds, next_bounds);
     let vertical_gap = next_bounds.origin.y - previous_bounds.max_y();
     let same_line = vertical_gap.abs() <= line_height * 0.55
         && vertical_overlap_ratio(previous_bounds, next_bounds) >= 0.35
@@ -1028,14 +1070,183 @@ fn should_merge_ocr_blocks(previous: &OcrTextBlock, next: &OcrTextBlock) -> bool
         return true;
     }
 
+    if ends_sentence(previous_text) {
+        return false;
+    }
+
     if vertical_gap < -line_height * 0.25 || vertical_gap > line_height * 1.25 {
         return false;
     }
 
+    if !similar_ocr_line_height(previous_bounds, next_bounds, settings) {
+        return false;
+    }
+
+    if group_ends_with_short_line(group, line_height, settings) {
+        return false;
+    }
+
+    if starts_with_inline_label(next_text, settings) {
+        return false;
+    }
+
+    let edge_tolerance = smart_merge_edge_tolerance(line_height, settings);
+    let left_aligned = group_edge_aligned_left(group, next_bounds, edge_tolerance);
+    let right_aligned = group_edge_aligned_right(group, next_bounds, edge_tolerance);
+    if !left_aligned && !right_aligned {
+        return false;
+    }
+
+    if group.len() == 1
+        && next_line_is_much_longer(previous_bounds, next_bounds, line_height, settings)
+    {
+        return false;
+    }
+
+    cross_line_width_is_compatible(
+        group,
+        next_bounds,
+        left_aligned,
+        right_aligned,
+        line_height,
+        settings,
+    )
+}
+
+fn merged_line_height(previous: Rect, next: Rect) -> f32 {
+    previous.size.height.max(next.size.height).max(1.0)
+}
+
+fn similar_ocr_line_height(previous: Rect, next: Rect, settings: SmartMergeSettings) -> bool {
+    let min_height = previous.size.height.min(next.size.height).max(1.0);
+    let max_height = previous.size.height.max(next.size.height).max(1.0);
+    max_height / min_height <= settings.height_ratio_limit
+}
+
+fn smart_merge_edge_tolerance(line_height: f32, settings: SmartMergeSettings) -> f32 {
+    (line_height * settings.edge_tolerance_lines).max(8.0)
+}
+
+fn smart_merge_loose_edge_tolerance(line_height: f32, settings: SmartMergeSettings) -> f32 {
+    (line_height * settings.loose_edge_tolerance_lines).max(12.0)
+}
+
+fn group_edge_aligned_left(
+    group: &[(usize, &OcrTextBlock)],
+    next_bounds: Rect,
+    tolerance: f32,
+) -> bool {
+    group
+        .iter()
+        .any(|(_, block)| (block.bounds.origin.x - next_bounds.origin.x).abs() <= tolerance)
+}
+
+fn group_edge_aligned_right(
+    group: &[(usize, &OcrTextBlock)],
+    next_bounds: Rect,
+    tolerance: f32,
+) -> bool {
+    group
+        .iter()
+        .any(|(_, block)| (block.bounds.max_x() - next_bounds.max_x()).abs() <= tolerance)
+}
+
+fn group_reference_width(group: &[(usize, &OcrTextBlock)]) -> f32 {
+    group
+        .iter()
+        .map(|(_, block)| block.bounds.size.width.max(0.0))
+        .fold(0.0, f32::max)
+}
+
+fn group_ends_with_short_line(
+    group: &[(usize, &OcrTextBlock)],
+    line_height: f32,
+    settings: SmartMergeSettings,
+) -> bool {
+    if group.len() < 2 {
+        return false;
+    }
+
+    let last_width = group
+        .last()
+        .map(|(_, block)| block.bounds.size.width.max(0.0))
+        .unwrap_or_default();
+    let reference_width = group
+        .iter()
+        .take(group.len() - 1)
+        .map(|(_, block)| block.bounds.size.width.max(0.0))
+        .fold(0.0, f32::max);
+
+    reference_width > line_height * 4.0
+        && reference_width - last_width > line_height * 3.0
+        && last_width <= reference_width * settings.short_last_line_ratio
+}
+
+fn next_line_is_much_longer(
+    previous: Rect,
+    next: Rect,
+    line_height: f32,
+    settings: SmartMergeSettings,
+) -> bool {
+    let width_growth = next.size.width - previous.size.width;
+    width_growth > line_height * 3.0
+        && next.size.width > previous.size.width * settings.longer_line_ratio
+}
+
+fn cross_line_width_is_compatible(
+    group: &[(usize, &OcrTextBlock)],
+    next_bounds: Rect,
+    left_aligned: bool,
+    right_aligned: bool,
+    line_height: f32,
+    settings: SmartMergeSettings,
+) -> bool {
+    if next_bounds.size.width < line_height {
+        return false;
+    }
+
+    let Some((_, previous)) = group.last() else {
+        return true;
+    };
+    let previous_bounds = previous.bounds;
+    let loose_tolerance = smart_merge_loose_edge_tolerance(line_height, settings);
     let left_delta = (next_bounds.origin.x - previous_bounds.origin.x).abs();
-    let wrapped_line =
-        left_delta <= line_height * 3.0 || next_bounds.origin.x <= previous_bounds.max_x();
-    wrapped_line && next_bounds.size.width >= line_height
+    let right_delta = (next_bounds.max_x() - previous_bounds.max_x()).abs();
+    let reference_width = group_reference_width(group).max(previous_bounds.size.width);
+    let short_continuation = group.len() >= 2
+        && next_bounds.size.width <= reference_width * settings.short_last_line_ratio
+        && reference_width - next_bounds.size.width > line_height * 2.0;
+
+    if left_aligned {
+        return right_delta <= loose_tolerance
+            || short_continuation
+            || next_bounds.max_x() <= previous_bounds.max_x() + loose_tolerance;
+    }
+
+    if right_aligned {
+        return left_delta <= loose_tolerance
+            || next_bounds.origin.x >= previous_bounds.origin.x - loose_tolerance;
+    }
+
+    false
+}
+
+fn starts_with_inline_label(text: &str, settings: SmartMergeSettings) -> bool {
+    let text = text.trim_start();
+    let Some((colon_index, _)) = text.char_indices().find(|(_, ch)| matches!(ch, ':' | '：'))
+    else {
+        return false;
+    };
+    let label = text[..colon_index].trim();
+    let label_len = label.chars().count();
+
+    label_len > 0
+        && label_len <= settings.inline_label_max_chars
+        && label.split_whitespace().count().max(1) <= 5
+        && label.chars().any(char::is_alphanumeric)
+        && !label
+            .chars()
+            .any(|ch| matches!(ch, '.' | ',' | ';' | '。' | '，' | '；'))
 }
 
 fn append_ocr_fragment(text: &mut String, fragment: &str) {
@@ -1159,6 +1370,164 @@ fn screen_vertical_overlap_ratio(a: EguiRect, b: EguiRect) -> f32 {
     }
 
     overlap / a.height().min(b.height()).max(1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use shared_models::{ImageId, OcrResult, OcrTextBlock};
+
+    use super::*;
+
+    #[test]
+    fn smart_merge_separates_title_summary_and_inline_label_rows() {
+        let result = ocr_result(vec![
+            block("Scenes", 0.0, 0.0, 64.0, 20.0),
+            block(
+                "Create, save, and load ECS worlds using Bevy's Scene system",
+                0.0,
+                30.0,
+                470.0,
+                18.0,
+            ),
+            block(
+                "Loading: Loading scenes preserves entity IDs (useful for save games)",
+                0.0,
+                58.0,
+                520.0,
+                18.0,
+            ),
+            block(
+                "Instancing: Instancing creates linked duplicates of scenes with new entity IDs",
+                0.0,
+                86.0,
+                560.0,
+                18.0,
+            ),
+            block(
+                "Hot Reloading: Changes to scene files are automatically applied to running apps",
+                0.0,
+                114.0,
+                590.0,
+                18.0,
+            ),
+        ]);
+
+        let groups = translatable_blocks_by_smart_merge(&result, SmartMergeSettings::default());
+
+        assert_eq!(
+            group_texts(&groups),
+            vec![
+                "Scenes",
+                "Create, save, and load ECS worlds using Bevy's Scene system",
+                "Loading: Loading scenes preserves entity IDs (useful for save games)",
+                "Instancing: Instancing creates linked duplicates of scenes with new entity IDs",
+                "Hot Reloading: Changes to scene files are automatically applied to running apps",
+            ]
+        );
+    }
+
+    #[test]
+    fn smart_merge_keeps_left_aligned_paragraph_with_short_final_line() {
+        let result = ocr_result(vec![
+            block(
+                "This paragraph wraps across multiple OCR",
+                12.0,
+                0.0,
+                330.0,
+                18.0,
+            ),
+            block(
+                "lines with the same left edge and similar",
+                12.0,
+                26.0,
+                326.0,
+                18.0,
+            ),
+            block("line height", 12.0, 52.0, 92.0, 18.0),
+            block("Next paragraph starts here", 12.0, 82.0, 230.0, 18.0),
+        ]);
+
+        let groups = translatable_blocks_by_smart_merge(&result, SmartMergeSettings::default());
+
+        assert_eq!(
+            group_texts(&groups),
+            vec![
+                "This paragraph wraps across multiple OCR lines with the same left edge and similar line height",
+                "Next paragraph starts here",
+            ]
+        );
+    }
+
+    #[test]
+    fn smart_merge_accepts_right_aligned_wrapped_lines() {
+        let result = ocr_result(vec![
+            block(
+                "Right aligned text can wrap across",
+                130.0,
+                0.0,
+                270.0,
+                18.0,
+            ),
+            block("multiple lines in a side panel", 160.0, 26.0, 240.0, 18.0),
+        ]);
+
+        let groups = translatable_blocks_by_smart_merge(&result, SmartMergeSettings::default());
+
+        assert_eq!(
+            group_texts(&groups),
+            vec!["Right aligned text can wrap across multiple lines in a side panel"]
+        );
+    }
+
+    #[test]
+    fn smart_merge_rejects_height_and_edge_mismatches() {
+        let height_mismatch = ocr_result(vec![
+            block("Small heading", 20.0, 0.0, 110.0, 14.0),
+            block("Large body text", 20.0, 26.0, 160.0, 28.0),
+        ]);
+        let edge_mismatch = ocr_result(vec![
+            block("Left column text", 20.0, 0.0, 150.0, 18.0),
+            block("Offset next line", 90.0, 26.0, 190.0, 18.0),
+        ]);
+
+        assert_eq!(
+            translatable_blocks_by_smart_merge(&height_mismatch, SmartMergeSettings::default())
+                .len(),
+            2
+        );
+        assert_eq!(
+            translatable_blocks_by_smart_merge(&edge_mismatch, SmartMergeSettings::default()).len(),
+            2
+        );
+    }
+
+    fn group_texts(groups: &[PinTranslatableBlock]) -> Vec<&str> {
+        groups.iter().map(|group| group.text.as_str()).collect()
+    }
+
+    fn ocr_result(blocks: Vec<OcrTextBlock>) -> OcrResult {
+        let plain_text = blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        OcrResult {
+            job_id: "test-job".to_owned(),
+            image_id: ImageId::new("test-image"),
+            blocks,
+            plain_text,
+        }
+    }
+
+    fn block(text: &str, x: f32, y: f32, width: f32, height: f32) -> OcrTextBlock {
+        OcrTextBlock {
+            text: text.to_owned(),
+            bounds: Rect::new(Point::new(x, y), Size::new(width, height)),
+            confidence: None,
+            language: Some("en".to_owned()),
+        }
+    }
 }
 
 impl App for PinWindowApp {
