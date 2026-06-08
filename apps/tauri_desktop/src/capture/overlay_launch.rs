@@ -2,6 +2,14 @@ use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Manager};
 
+const OVERLAY_BIN_ENV: &str = "SNAP_PIN_OVERLAY_BIN";
+const OVERLAY_FEATURES_ENV: &str = "SNAP_PIN_OVERLAY_FEATURES";
+const DEFAULT_OVERLAY_FEATURES: &str = if cfg!(feature = "local-translate-ct2") {
+    "local-ocr-rs,local-translate-ct2"
+} else {
+    "local-ocr-rs"
+};
+
 // Resolves the overlay binary in packaged builds and falls back to cargo during workspace runs.
 pub(crate) enum OverlayLaunch {
     Executable(PathBuf),
@@ -26,14 +34,13 @@ impl OverlayLaunch {
                 command
             }
             OverlayLaunch::Cargo { workspace } => {
-                let mut cargo_args = vec![
-                    "run".to_owned(),
-                    "-p".to_owned(),
-                    "egui_overlay".to_owned(),
-                    "--features".to_owned(),
-                    "local-ocr-rs,local-translate-ct2".to_owned(),
-                    "--".to_owned(),
-                ];
+                let mut cargo_args =
+                    vec!["run".to_owned(), "-p".to_owned(), "egui_overlay".to_owned()];
+                if let Some(features) = overlay_features() {
+                    cargo_args.push("--features".to_owned());
+                    cargo_args.push(features);
+                }
+                cargo_args.push("--".to_owned());
                 cargo_args.extend(overlay_args);
                 let cargo_args_json = serde_json::to_string(&cargo_args).unwrap_or_else(|error| {
                     log::error!("failed to serialize overlay cargo args: {error}");
@@ -57,6 +64,16 @@ impl OverlayLaunch {
             }
         }
     }
+}
+
+fn overlay_features() -> Option<String> {
+    let value = std::env::var(OVERLAY_FEATURES_ENV)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_OVERLAY_FEATURES.to_owned());
+
+    (!value.eq_ignore_ascii_case("none")).then_some(value)
 }
 
 fn prepend_mnn_dll_path(command: &mut std::process::Command, workspace: &Path) {
@@ -91,13 +108,31 @@ fn mnn_dll_dir(workspace: &Path) -> PathBuf {
 }
 
 pub(crate) fn overlay_launch(app: &AppHandle) -> Result<OverlayLaunch, String> {
+    if let Some(path) = overlay_bin_from_env() {
+        log::info!(
+            "using overlay executable from {OVERLAY_BIN_ENV} {}",
+            path.display()
+        );
+        return Ok(OverlayLaunch::Executable(path));
+    }
+
     let current_exe = std::env::current_exe().map_err(|error| error.to_string())?;
     let file_name = executable_name("egui_overlay");
 
     if let Some(workspace) = find_workspace_root(&current_exe) {
         if is_workspace_debug_executable(&current_exe, &workspace) {
+            let debug_exe = workspace.join("target").join("debug").join(&file_name);
+            if debug_exe.exists() {
+                log::info!(
+                    "using built debug overlay executable {}",
+                    debug_exe.display()
+                );
+                return Ok(OverlayLaunch::Executable(debug_exe));
+            }
+
             log::info!(
-                "using cargo overlay launch current_exe={} workspace={}",
+                "built debug overlay executable missing {}; falling back to cargo overlay launch current_exe={} workspace={}",
+                debug_exe.display(),
                 current_exe.display(),
                 workspace.display()
             );
@@ -124,6 +159,20 @@ pub(crate) fn overlay_launch(app: &AppHandle) -> Result<OverlayLaunch, String> {
     Ok(OverlayLaunch::Executable(
         current_exe.with_file_name(file_name),
     ))
+}
+
+fn overlay_bin_from_env() -> Option<PathBuf> {
+    let value = std::env::var_os(OVERLAY_BIN_ENV)?;
+    let path = PathBuf::from(value);
+    if path.exists() {
+        return Some(path);
+    }
+
+    log::warn!(
+        "{OVERLAY_BIN_ENV} points to missing overlay executable {}",
+        path.display()
+    );
+    None
 }
 
 fn is_workspace_debug_executable(current_exe: &Path, workspace: &Path) -> bool {

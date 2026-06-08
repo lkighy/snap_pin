@@ -26,6 +26,7 @@ pub(crate) struct CliArgs {
     pub(crate) pin_min_width: f32,
     pub(crate) pin_min_height: f32,
     pub(crate) pin_always_on_top: bool,
+    pub(crate) pin_startup_action: String,
     pub(crate) ocr_provider: String,
     pub(crate) ocr_language_hint: Option<String>,
     pub(crate) ocr_default_model_id: Option<String>,
@@ -78,6 +79,7 @@ impl CliArgs {
             pin_min_width: 96.0,
             pin_min_height: 72.0,
             pin_always_on_top: true,
+            pin_startup_action: "none".to_owned(),
             ocr_provider: "local-mnn".to_owned(),
             ocr_language_hint: None,
             ocr_default_model_id: None,
@@ -163,6 +165,9 @@ impl CliArgs {
                 }
                 "--pin-always-on-top" => {
                     parsed.pin_always_on_top = parse_next(&mut args, parsed.pin_always_on_top)
+                }
+                "--pin-startup-action" => {
+                    parsed.pin_startup_action = parse_next(&mut args, parsed.pin_startup_action)
                 }
                 "--ocr-provider" => {
                     parsed.ocr_provider = parse_next(&mut args, parsed.ocr_provider)

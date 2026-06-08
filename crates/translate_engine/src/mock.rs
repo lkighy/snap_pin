@@ -58,4 +58,14 @@ impl TranslateEngine for MockTranslateEngine {
             provider: request.provider.clone(),
         })
     }
+
+    fn translate_batch(
+        &self,
+        requests: &[TranslationRequest],
+    ) -> Result<Vec<TranslationResult>, TranslateEngineError> {
+        requests
+            .iter()
+            .map(|request| self.translate(request))
+            .collect()
+    }
 }

@@ -1,5 +1,10 @@
 use shared_models::{ImageData, OcrJob, OcrResult};
 
+use perf_trace::PerfSpan;
+
+#[cfg(feature = "local-ocr-rs")]
+use perf_trace::log_elapsed;
+
 use crate::{OcrEngineError, OcrModelBundle};
 
 #[cfg(feature = "local-ocr-rs")]
@@ -13,13 +18,23 @@ pub fn recognize(
     job: &OcrJob,
     image: &ImageData,
 ) -> Result<OcrResult, OcrEngineError> {
+    let mut span = PerfSpan::new("ocr_rs_backend_recognize_total")
+        .field("model_id", &bundle.manifest.id)
+        .field("image_bytes", image.bytes.len());
+    let decode_start = std::time::Instant::now();
     let input = decode_image(image)?;
+    log_elapsed("ocr_rs_backend_decode_image", decode_start);
+    let engine_start = std::time::Instant::now();
     let engine = ocr_rs::OcrEngine::new(&bundle.det, &bundle.rec, &bundle.keys, None)
         .map_err(|error| OcrEngineError::new("local_ocr_engine_load_failed", error.to_string()))?;
+    log_elapsed("ocr_rs_backend_create_engine", engine_start);
+    let recognize_start = std::time::Instant::now();
     let raw_results = engine
         .recognize(&input)
         .map_err(|error| OcrEngineError::new("local_ocr_failed", error.to_string()))?;
+    log_elapsed("ocr_rs_backend_native_recognize", recognize_start);
 
+    let normalize_start = std::time::Instant::now();
     let blocks = raw_results
         .into_iter()
         .map(|result| {
@@ -42,8 +57,12 @@ pub fn recognize(
             }
         })
         .collect::<Vec<_>>();
+    span.add_field("blocks", blocks.len());
+    let result = normalized_result(job, image, blocks);
+    log_elapsed("ocr_rs_backend_normalize_result", normalize_start);
+    span.finish();
 
-    Ok(normalized_result(job, image, blocks))
+    Ok(result)
 }
 
 #[cfg(not(feature = "local-ocr-rs"))]
@@ -52,6 +71,8 @@ pub fn recognize(
     _job: &OcrJob,
     _image: &ImageData,
 ) -> Result<OcrResult, OcrEngineError> {
+    let span = PerfSpan::new("ocr_rs_backend_recognize_total").field("runtime", "disabled");
+    span.finish();
     Err(OcrEngineError::new(
         "local_ocr_runtime_disabled",
         "local OCR runtime is not compiled; enable the 'local-ocr-rs' feature to use MNN OCR",

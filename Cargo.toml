@@ -5,6 +5,7 @@ members = [
     "crates/core_service",
     "crates/model_registry",
     "crates/ocr_engine",
+    "crates/perf_trace",
     "crates/platform_api",
     "crates/platform_runtime",
     "crates/platform_win32",
@@ -26,6 +27,7 @@ ipc = { path = "crates/ipc" }
 log = "0.4"
 model_registry = { path = "crates/model_registry" }
 ocr_engine = { path = "crates/ocr_engine" }
+perf_trace = { path = "crates/perf_trace" }
 platform_api = { path = "crates/platform_api" }
 platform_runtime = { path = "crates/platform_runtime" }
 platform_win32 = { path = "crates/platform_win32" }

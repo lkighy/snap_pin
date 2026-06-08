@@ -1158,6 +1158,7 @@ dependencies = [
  "log",
  "model_registry",
  "ocr_engine",
+ "perf_trace",
  "platform_api",
  "shared_models",
  "translate_engine",
@@ -1734,6 +1735,7 @@ dependencies = [
  "log",
  "model_registry",
  "ocr_engine",
+ "perf_trace",
  "platform_api",
  "platform_runtime",
  "raw-window-handle",
@@ -4251,6 +4253,7 @@ dependencies = [
  "base64 0.22.1",
  "image",
  "ocr-rs",
+ "perf_trace",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -4378,6 +4381,13 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "perf_trace"
+version = "0.1.0"
+dependencies = [
+ "log",
+]
 
 [[package]]
 name = "phf"
@@ -6241,6 +6251,7 @@ dependencies = [
  "ipc",
  "log",
  "model_registry",
+ "perf_trace",
  "platform_api",
  "platform_runtime",
  "serde",
@@ -6656,6 +6667,7 @@ name = "translate_engine"
 version = "0.1.0"
 dependencies = [
  "ct2rs",
+ "perf_trace",
  "shared_models",
 ]
 

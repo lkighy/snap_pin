@@ -19,6 +19,9 @@ OCR backends deferred until after 0.1 are tracked in
 Translation-specific model and runtime decisions are tracked in
 [docs/TRANSLATION_STRATEGY.md](docs/TRANSLATION_STRATEGY.md).
 
+Startup, screenshot, OCR, and translation optimization order is tracked in
+[docs/PERFORMANCE_OPTIMIZATION_ORDER.md](docs/PERFORMANCE_OPTIMIZATION_ORDER.md).
+
 The current runnable MVP status is tracked in
 [docs/MVP_STATUS.md](docs/MVP_STATUS.md).
 

@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
+use std::time::Instant;
 
 use eframe::egui::{
     self, Color32, ColorImage, Context, Id, Key, Painter, PointerButton, Pos2, Rect as EguiRect,
@@ -9,6 +10,9 @@ use eframe::egui::{
 };
 use eframe::{App, CreationContext, Frame};
 use image::DynamicImage;
+use perf_trace::{PerfSpan, log_elapsed};
+use platform_api::NativeWindowRef;
+use raw_window_handle::HasWindowHandle;
 use shared_models::{
     OcrProvider, OcrResult, OcrTextBlock, Point, Rect, Size, TextOverlay, TranslateProvider,
 };
@@ -16,6 +20,7 @@ use shared_models::{
 use crate::capture::hotkeys::{command_shift_shortcut_pressed, copy_shortcut_pressed};
 use crate::capture::paint::{draw_error, draw_pin_border};
 use crate::capture::snapshot_io::capture_file_name;
+use crate::capture::window::hwnd_from_raw_window_handle;
 use crate::pin::ocr::{PinOcrRequest, parse_ocr_provider, recognize_pin_image};
 use crate::pin::text_overlay::{
     OcrTextOverlayStyle, draw_text_overlay, ocr_block_interaction_rect,
@@ -38,7 +43,7 @@ use crate::runtime::text::OverlayText;
 pub(crate) struct PinWindowApp {
     text: OverlayText,
     image_path: Option<PathBuf>,
-    texture: Option<TextureHandle>,
+    image_tiles: Vec<PinImageTile>,
     image_size: Vec2,
     image_display_size: Vec2,
     sizing: PinWindowSizing,
@@ -52,6 +57,7 @@ pub(crate) struct PinWindowApp {
     ocr_default_model_id: Option<String>,
     ocr_models_registry: Option<PathBuf>,
     ocr_receiver: Option<mpsc::Receiver<Result<OcrResult, String>>>,
+    ocr_started_at: Option<Instant>,
     ocr_result: Option<OcrResult>,
     ocr_status: Option<String>,
     selected_ocr_block: Option<usize>,
@@ -61,21 +67,93 @@ pub(crate) struct PinWindowApp {
     smart_merge_settings: SmartMergeSettings,
     translate_default_model_id: Option<String>,
     translate_receiver: Option<mpsc::Receiver<Result<Vec<PinBlockTranslation>, String>>>,
+    translate_started_at: Option<Instant>,
     block_translations: Vec<PinBlockTranslation>,
     translate_after_ocr: bool,
     ocr_text_style: OcrTextOverlayStyle,
+    window_hwnd: Option<isize>,
+    initial_client_position: Point,
+    client_position_sync_frames: u8,
+}
+
+struct PinImageTile {
+    texture: TextureHandle,
+    rect: EguiRect,
+}
+
+impl PinImageTile {
+    fn scaled_rect(&self, image_rect: EguiRect, image_size: Vec2) -> EguiRect {
+        let scale_x = image_rect.width() / image_size.x.max(1.0);
+        let scale_y = image_rect.height() / image_size.y.max(1.0);
+        EguiRect::from_min_max(
+            Pos2::new(
+                image_rect.min.x + self.rect.min.x * scale_x,
+                image_rect.min.y + self.rect.min.y * scale_y,
+            ),
+            Pos2::new(
+                image_rect.min.x + self.rect.max.x * scale_x,
+                image_rect.min.y + self.rect.max.y * scale_y,
+            ),
+        )
+    }
+}
+
+fn build_pin_image_tiles(ctx: &Context, image: &image::RgbaImage) -> Vec<PinImageTile> {
+    let mut span = PerfSpan::new("pin_build_image_tiles")
+        .field("width", image.width())
+        .field("height", image.height());
+    let max_texture_side = ctx.input(|input| input.max_texture_side.max(1)) as u32;
+    let tile_side = max_texture_side.min(1024).max(1);
+    let image_width = image.width();
+    let image_height = image.height();
+    let mut tiles = Vec::new();
+
+    let mut y = 0;
+    while y < image_height {
+        let height = tile_side.min(image_height - y);
+        let mut x = 0;
+        while x < image_width {
+            let width = tile_side.min(image_width - x);
+            let tile = image::imageops::crop_imm(image, x, y, width, height).to_image();
+            let size = [width as usize, height as usize];
+            let texture = ctx.load_texture(
+                format!("pinned-image-{x}-{y}"),
+                ColorImage::from_rgba_unmultiplied(size, tile.as_raw()),
+                TextureOptions::LINEAR,
+            );
+            let rect = EguiRect::from_min_size(
+                Pos2::new(x as f32, y as f32),
+                Vec2::new(width as f32, height as f32),
+            );
+            tiles.push(PinImageTile { texture, rect });
+
+            x += width;
+        }
+
+        y += height;
+    }
+
+    span.add_field("tile_side", tile_side);
+    span.add_field("tiles", tiles.len());
+    span.finish();
+    tiles
 }
 
 impl PinWindowApp {
     pub(crate) fn new(creation_context: &CreationContext<'_>, args: CliArgs) -> Self {
         install_system_fonts(&creation_context.egui_ctx);
         let text = OverlayText::new(args.language);
+        let startup_action = PinStartupAction::from_name(&args.pin_startup_action);
         let initial_image_size = Vec2::new(args.width, args.height);
         let sizing = PinWindowSizing::new(args.pin_min_width, args.pin_min_height);
+        let window_hwnd = creation_context
+            .window_handle()
+            .ok()
+            .and_then(|handle| hwnd_from_raw_window_handle(handle.as_raw()));
         let mut app = Self {
             text,
             image_path: args.image,
-            texture: None,
+            image_tiles: Vec::new(),
             image_size: initial_image_size,
             image_display_size: clamp_pin_window_size(initial_image_size, sizing),
             sizing,
@@ -89,6 +167,7 @@ impl PinWindowApp {
             ocr_default_model_id: args.ocr_default_model_id,
             ocr_models_registry: args.ocr_models_registry,
             ocr_receiver: None,
+            ocr_started_at: None,
             ocr_result: None,
             ocr_status: None,
             selected_ocr_block: None,
@@ -107,6 +186,7 @@ impl PinWindowApp {
             },
             translate_default_model_id: args.translate_default_model_id,
             translate_receiver: None,
+            translate_started_at: None,
             block_translations: Vec::new(),
             translate_after_ocr: false,
             ocr_text_style: OcrTextOverlayStyle::new(
@@ -118,6 +198,9 @@ impl PinWindowApp {
                 args.ocr_text_interaction_padding_x,
                 args.ocr_text_interaction_padding_y,
             ),
+            window_hwnd,
+            initial_client_position: Point::new(args.x, args.y),
+            client_position_sync_frames: 3,
         };
         let level = if args.pin_always_on_top {
             WindowLevel::AlwaysOnTop
@@ -128,7 +211,51 @@ impl PinWindowApp {
             .egui_ctx
             .send_viewport_cmd(ViewportCommand::WindowLevel(level));
         app.load_texture(&creation_context.egui_ctx);
+        app.run_startup_action(&creation_context.egui_ctx, startup_action);
         app
+    }
+
+    fn run_startup_action(&mut self, ctx: &Context, action: PinStartupAction) {
+        if self.image_tiles.is_empty() {
+            return;
+        }
+
+        match action {
+            PinStartupAction::None => {}
+            PinStartupAction::Ocr => self.run_ocr_for_pin(ctx),
+            PinStartupAction::Translate => self.run_translation_for_pin(ctx),
+        }
+    }
+
+    fn sync_initial_client_position(&mut self, ctx: &Context) {
+        if self.client_position_sync_frames == 0 {
+            return;
+        }
+        self.client_position_sync_frames -= 1;
+        let Some(hwnd) = self.window_hwnd else {
+            return;
+        };
+
+        match platform_runtime::create_platform()
+            .window_ops()
+            .move_client_area_to(
+                NativeWindowRef::from_raw(hwnd),
+                self.initial_client_position,
+            ) {
+            Ok(()) => {
+                log::info!(
+                    "pin window client area aligned x={} y={} remaining_sync_frames={}",
+                    self.initial_client_position.x,
+                    self.initial_client_position.y,
+                    self.client_position_sync_frames
+                );
+            }
+            Err(error) => {
+                log::warn!("failed to align pin window client area: {error}");
+                self.client_position_sync_frames = 0;
+            }
+        }
+        ctx.request_repaint();
     }
 
     fn load_texture(&mut self, ctx: &Context) {
@@ -138,20 +265,32 @@ impl PinWindowApp {
             return;
         };
 
+        let mut span = PerfSpan::new("pin_image_load_total");
         log::info!("pin window loading image {}", path.display());
+        let open_start = Instant::now();
         match image::open(path) {
             Ok(image) => {
+                log_elapsed("pin_image_open_file", open_start);
+                let rgba_start = Instant::now();
                 let image = image.to_rgba8();
+                log_elapsed("pin_image_to_rgba", rgba_start);
                 let size = [image.width() as usize, image.height() as usize];
                 self.image_size = Vec2::new(size[0] as f32, size[1] as f32);
                 self.image_display_size = clamp_pin_window_size(self.image_size, self.sizing);
-                self.texture = Some(ctx.load_texture(
-                    "pinned-image",
-                    ColorImage::from_rgba_unmultiplied(size, image.as_raw()),
-                    TextureOptions::LINEAR,
-                ));
+                let texture_start = Instant::now();
+                self.image_tiles = build_pin_image_tiles(ctx, &image);
+                log_elapsed("pin_image_texture_tiles_build", texture_start);
                 ctx.send_viewport_cmd(ViewportCommand::InnerSize(self.image_display_size));
-                log::info!("pin window image loaded size={}x{}", size[0], size[1]);
+                log::info!(
+                    "pin window image loaded size={}x{} tiles={}",
+                    size[0],
+                    size[1],
+                    self.image_tiles.len()
+                );
+                span.add_field("width", size[0]);
+                span.add_field("height", size[1]);
+                span.add_field("tiles", self.image_tiles.len());
+                span.finish();
             }
             Err(error) => {
                 log::error!(
@@ -540,6 +679,7 @@ impl PinWindowApp {
         self.ocr_result = None;
         self.selected_ocr_block = None;
         self.block_translations.clear();
+        self.ocr_started_at = Some(Instant::now());
 
         let request = PinOcrRequest {
             path,
@@ -552,9 +692,11 @@ impl PinWindowApp {
         let (sender, receiver) = mpsc::channel();
         let repaint_ctx = ctx.clone();
         thread::spawn(move || {
+            let span = PerfSpan::new("pin_ocr_worker_total");
             let result = recognize_pin_image(request);
             let _ = sender.send(result);
             repaint_ctx.request_repaint();
+            span.finish();
         });
         self.ocr_receiver = Some(receiver);
     }
@@ -581,6 +723,7 @@ impl PinWindowApp {
         self.translate_after_ocr = false;
         self.ocr_status = Some("Translation running...".to_owned());
         self.block_translations.clear();
+        self.translate_started_at = Some(Instant::now());
         let request = PinBlockTranslateRequest {
             blocks,
             target_language: self.translate_target_language.clone(),
@@ -591,9 +734,11 @@ impl PinWindowApp {
         let (sender, receiver) = mpsc::channel();
         let repaint_ctx = ctx.clone();
         thread::spawn(move || {
+            let span = PerfSpan::new("pin_translation_worker_total");
             let result = translate_pin_blocks(request);
             let _ = sender.send(result);
             repaint_ctx.request_repaint();
+            span.finish();
         });
         self.translate_receiver = Some(receiver);
     }
@@ -601,10 +746,12 @@ impl PinWindowApp {
     fn close_ocr(&mut self, ctx: &Context) {
         let previous_edge = self.toolbar_edge;
         self.ocr_receiver = None;
+        self.ocr_started_at = None;
         self.ocr_result = None;
         self.ocr_status = None;
         self.selected_ocr_block = None;
         self.translate_receiver = None;
+        self.translate_started_at = None;
         self.block_translations.clear();
         self.translate_after_ocr = false;
         self.resize_toolbar_window_from_viewport(ctx, previous_edge);
@@ -620,6 +767,9 @@ impl PinWindowApp {
         };
 
         self.ocr_receiver = None;
+        if let Some(started_at) = self.ocr_started_at.take() {
+            log_elapsed("pin_ocr_ui_roundtrip", started_at);
+        }
         match result {
             Ok(result) => {
                 log::info!(
@@ -656,6 +806,9 @@ impl PinWindowApp {
         };
 
         self.translate_receiver = None;
+        if let Some(started_at) = self.translate_started_at.take() {
+            log_elapsed("pin_translation_ui_roundtrip", started_at);
+        }
         self.translate_after_ocr = false;
         match result {
             Ok(translations) => {
@@ -1372,6 +1525,23 @@ fn screen_vertical_overlap_ratio(a: EguiRect, b: EguiRect) -> f32 {
     overlap / a.height().min(b.height()).max(1.0)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinStartupAction {
+    None,
+    Ocr,
+    Translate,
+}
+
+impl PinStartupAction {
+    fn from_name(value: &str) -> Self {
+        match value {
+            "ocr" => Self::Ocr,
+            "translate" => Self::Translate,
+            _ => Self::None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use shared_models::{ImageId, OcrResult, OcrTextBlock};
@@ -1532,6 +1702,7 @@ mod tests {
 
 impl App for PinWindowApp {
     fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+        self.sync_initial_client_position(ctx);
         self.drain_ocr_result(ctx);
         self.drain_translation_result(ctx);
         self.handle_shortcuts(ctx);
@@ -1545,14 +1716,16 @@ impl App for PinWindowApp {
                 let image_rect = self.image_rect(canvas);
                 self.handle_canvas_response(ctx, &response, canvas, image_rect);
 
-                if let Some(texture) = &self.texture {
+                if !self.image_tiles.is_empty() {
                     let tint = Color32::from_white_alpha((self.opacity * 255.0).round() as u8);
-                    ui.painter().image(
-                        texture.id(),
-                        image_rect,
-                        EguiRect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                        tint,
-                    );
+                    for tile in &self.image_tiles {
+                        ui.painter().image(
+                            tile.texture.id(),
+                            tile.scaled_rect(image_rect, self.image_size),
+                            EguiRect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                            tint,
+                        );
+                    }
                     draw_pin_border(ui.painter(), image_rect);
                     self.draw_ocr_overlays(ui.painter(), image_rect);
                     self.draw_toolbar(ui.painter(), canvas, image_rect);

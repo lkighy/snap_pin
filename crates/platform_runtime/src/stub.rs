@@ -234,6 +234,17 @@ impl WindowOps for StubWindowOps {
         ))
     }
 
+    fn move_client_area_to(
+        &self,
+        _window: NativeWindowRef,
+        _position: shared_models::Point,
+    ) -> Result<(), PlatformError> {
+        Err(unavailable(
+            PlatformCapability::PinWindow,
+            self.reason.clone(),
+        ))
+    }
+
     fn suspend_for_modal(&self, _window: NativeWindowRef) -> Result<(), PlatformError> {
         Err(unavailable(
             PlatformCapability::OverlayWindow,

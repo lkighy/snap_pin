@@ -1,3 +1,6 @@
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
 use platform_api::{
     AppPlatform, CapabilityStatus, Clipboard, ClipboardPayload, FileDialog, GlobalHotkey,
     HotkeyEventSink, HotkeyRegistration, HotkeyToken, ImageData, MonitorInfo, NativeWindowRef,
@@ -6,12 +9,15 @@ use platform_api::{
 };
 
 use crate::{
-    CaptureBackendHint, CaptureRequest, CapturedFrame, DxgiCaptureBackend, GdiCaptureBackend,
-    WgcCaptureBackend, WindowsCaptureBackend, capture_region, create_named_shared_memory,
-    listen_for_hotkey, prompt_folder_path, prompt_save_png_path, read_clipboard_payload,
-    read_named_shared_memory, recognize_system_ocr, set_always_on_top, set_click_through,
-    virtual_screen_bounds, write_clipboard_payload,
+    CaptureBackendHint, CaptureBackendKind, CaptureRequest, CapturedFrame, DxgiCaptureBackend,
+    GdiCaptureBackend, WgcCaptureBackend, WindowsCaptureBackend, capture_region,
+    create_named_shared_memory, listen_for_hotkey, prompt_folder_path, prompt_save_png_path,
+    read_clipboard_payload, read_named_shared_memory, recognize_system_ocr, set_always_on_top,
+    set_click_through, virtual_screen_bounds, write_clipboard_payload,
 };
+
+const DXGI_FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
+static DXGI_SKIP_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
 
 #[derive(Debug, Default)]
 pub struct Win32Platform {
@@ -162,6 +168,14 @@ impl WindowOps for Win32WindowOps {
         crate::try_park_window(window.raw, bounds, true)
     }
 
+    fn move_client_area_to(
+        &self,
+        window: NativeWindowRef,
+        position: shared_models::Point,
+    ) -> Result<(), PlatformError> {
+        crate::move_client_area_to(window.raw, position)
+    }
+
     fn suspend_for_modal(&self, window: NativeWindowRef) -> Result<(), PlatformError> {
         crate::try_suspend_window_for_modal_dialog(window.raw)
     }
@@ -219,8 +233,18 @@ fn capture_with_backends(request: CaptureRequest) -> Result<CapturedFrame, Platf
     let mut last_error = None;
 
     for backend in backends {
+        if backend.kind() == CaptureBackendKind::Dxgi && dxgi_cooldown_active() {
+            log::info!("skipping DXGI screen capture backend after recent recoverable failure");
+            continue;
+        }
+
         match backend.capture(request.clone()) {
-            Ok(frame) => return Ok(frame),
+            Ok(frame) => {
+                if backend.kind() == CaptureBackendKind::Dxgi {
+                    clear_dxgi_cooldown();
+                }
+                return Ok(frame);
+            }
             Err(error) if error.code == "not_implemented" => {
                 last_error = Some(error);
             }
@@ -229,12 +253,55 @@ fn capture_with_backends(request: CaptureRequest) -> Result<CapturedFrame, Platf
                     "screen capture backend failed kind={:?}: {error}",
                     backend.kind()
                 );
+                if backend.kind() == CaptureBackendKind::Dxgi && should_cool_down_dxgi(&error) {
+                    cool_down_dxgi(&error);
+                }
                 last_error = Some(error);
             }
         }
     }
 
     last_error.map_or_else(|| capture_region(request.region), Err)
+}
+
+fn dxgi_cooldown_active() -> bool {
+    let now = Instant::now();
+    let Ok(mut skip_until) = DXGI_SKIP_UNTIL.lock() else {
+        return false;
+    };
+
+    if let Some(until) = *skip_until {
+        if now < until {
+            return true;
+        }
+        *skip_until = None;
+    }
+
+    false
+}
+
+fn cool_down_dxgi(error: &PlatformError) {
+    if let Ok(mut skip_until) = DXGI_SKIP_UNTIL.lock() {
+        *skip_until = Some(Instant::now() + DXGI_FAILURE_COOLDOWN);
+    }
+    log::info!(
+        "temporarily cooling down DXGI screen capture backend code={} cooldown_ms={}",
+        error.code,
+        DXGI_FAILURE_COOLDOWN.as_millis()
+    );
+}
+
+fn clear_dxgi_cooldown() {
+    if let Ok(mut skip_until) = DXGI_SKIP_UNTIL.lock() {
+        *skip_until = None;
+    }
+}
+
+fn should_cool_down_dxgi(error: &PlatformError) -> bool {
+    matches!(
+        error.code.as_str(),
+        "dxgi_empty_frame" | "dxgi_frame_timeout" | "dxgi_capture_empty"
+    )
 }
 
 #[cfg(windows)]

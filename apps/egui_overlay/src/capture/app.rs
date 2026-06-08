@@ -477,11 +477,15 @@ impl CaptureOverlayApp {
         }
 
         let result = match action {
-            CaptureAction::Pin => self.capture_selection_to_pin(selection, region),
+            CaptureAction::Pin => self.capture_selection_to_pin(selection, region, "none"),
+            CaptureAction::Ocr => self.capture_selection_to_pin(selection, region, "ocr"),
+            CaptureAction::Translate => {
+                self.capture_selection_to_pin(selection, region, "translate")
+            }
             CaptureAction::Copy => self.copy_selection_to_clipboard(selection),
             CaptureAction::Editor => {
                 log::warn!("capture editor action is not implemented; falling back to pin");
-                self.capture_selection_to_pin(selection, region)
+                self.capture_selection_to_pin(selection, region, "none")
             }
             CaptureAction::Save => unreachable!("save is handled as a deferred modal action"),
         };
@@ -580,16 +584,22 @@ impl CaptureOverlayApp {
         ctx.request_repaint();
     }
 
-    fn capture_selection_to_pin(&self, selection: EguiRect, region: Rect) -> Result<(), String> {
+    fn capture_selection_to_pin(
+        &self,
+        selection: EguiRect,
+        region: Rect,
+        startup_action: &'static str,
+    ) -> Result<(), String> {
         let Some(snapshot) = &self.snapshot_image else {
             log::error!("pin failed: missing snapshot image");
             return Err(self.text.missing_snapshot.to_owned());
         };
 
         log::info!(
-            "pin capture requested selection={:?} region={:?}",
+            "pin capture requested selection={:?} region={:?} startup_action={}",
             selection,
-            region
+            region,
+            startup_action
         );
         let cropped = crop_snapshot_to_file(snapshot, selection, &self.text)?;
         log::info!(
@@ -609,6 +619,7 @@ impl CaptureOverlayApp {
             min_width: self.pin_min_width,
             min_height: self.pin_min_height,
             always_on_top: self.pin_always_on_top,
+            startup_action,
             ocr_provider: &self.ocr_provider,
             ocr_language_hint: self.ocr_language_hint.as_deref(),
             ocr_default_model_id: self.ocr_default_model_id.as_deref(),
@@ -896,6 +907,8 @@ pub(crate) enum CaptureAction {
     Pin,
     Copy,
     Save,
+    Ocr,
+    Translate,
     Editor,
 }
 
@@ -904,6 +917,8 @@ impl CaptureAction {
         match value {
             "copy" => Self::Copy,
             "save" => Self::Save,
+            "ocr" => Self::Ocr,
+            "translate" => Self::Translate,
             "editor" => Self::Editor,
             _ => Self::Pin,
         }

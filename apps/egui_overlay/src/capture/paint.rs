@@ -12,6 +12,7 @@ const MAGNIFIER_SAMPLE_SIZE: i32 = 17;
 const TOOLBAR_BUTTON_SIZE: f32 = 28.0;
 const TOOLBAR_BUTTON_GAP: f32 = 4.0;
 const TOOLBAR_PADDING: f32 = 6.0;
+const TOOLBAR_BUTTON_COUNT: usize = 5;
 
 // Rendering helpers are kept stateless so CaptureOverlayApp owns behavior, not paint details.
 pub(crate) fn snapshot_color_at(snapshot: &DynamicImage, x: u32, y: u32) -> Color32 {
@@ -257,18 +258,25 @@ pub(crate) fn toolbar_action_at(
 fn toolbar_rect(canvas: EguiRect, selection: EguiRect, text: OverlayText) -> EguiRect {
     let width = toolbar_width(text);
     let size = Vec2::new(width, 34.0);
-    let x = (selection.max.x - size.x).clamp(canvas.min.x + 8.0, canvas.max.x - size.x - 8.0);
+    let min_x = canvas.min.x + 8.0;
+    let max_x = (canvas.max.x - size.x - 8.0).max(min_x);
+    let x = (selection.max.x - size.x).clamp(min_x, max_x);
     let y = if selection.max.y + size.y + 10.0 <= canvas.max.y {
         selection.max.y + 8.0
     } else {
         selection.min.y - size.y - 8.0
     }
-    .clamp(canvas.min.y + 8.0, canvas.max.y - size.y - 8.0);
+    .clamp(
+        canvas.min.y + 8.0,
+        (canvas.max.y - size.y - 8.0).max(canvas.min.y + 8.0),
+    );
     EguiRect::from_min_size(Pos2::new(x, y), size)
 }
 
 fn toolbar_width(_text: OverlayText) -> f32 {
-    TOOLBAR_PADDING * 2.0 + TOOLBAR_BUTTON_SIZE * 3.0 + TOOLBAR_BUTTON_GAP * 2.0
+    TOOLBAR_PADDING * 2.0
+        + TOOLBAR_BUTTON_SIZE * TOOLBAR_BUTTON_COUNT as f32
+        + TOOLBAR_BUTTON_GAP * (TOOLBAR_BUTTON_COUNT - 1) as f32
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -284,6 +292,8 @@ fn toolbar_buttons(toolbar: EguiRect, text: OverlayText) -> Vec<ToolbarButton> {
         (text.pin_action, CaptureAction::Pin),
         (text.copy_action, CaptureAction::Copy),
         (text.save_action, CaptureAction::Save),
+        (text.ocr_action, CaptureAction::Ocr),
+        (text.translate_action, CaptureAction::Translate),
     ]
     .into_iter()
     .map(|(label, action)| {
@@ -306,6 +316,8 @@ fn draw_toolbar_icon(painter: &Painter, rect: EguiRect, action: CaptureAction, c
         CaptureAction::Pin => draw_pin_icon(painter, rect, color),
         CaptureAction::Copy => draw_copy_icon(painter, rect, color),
         CaptureAction::Save | CaptureAction::Editor => draw_save_icon(painter, rect, color),
+        CaptureAction::Ocr => draw_ocr_icon(painter, rect, color),
+        CaptureAction::Translate => draw_translate_icon(painter, rect, color),
     }
 }
 
@@ -353,6 +365,61 @@ fn draw_save_icon(painter: &Painter, rect: EguiRect, color: Color32) {
         Vec2::new(body.width() - 8.0, 5.0),
     );
     painter.rect_stroke(slot, CornerRadius::same(1), stroke, StrokeKind::Inside);
+}
+
+fn draw_ocr_icon(painter: &Painter, rect: EguiRect, color: Color32) {
+    let stroke = Stroke::new(1.6, color);
+    let box_rect = EguiRect::from_center_size(rect.center(), Vec2::new(17.0, 14.0));
+    painter.rect_stroke(box_rect, CornerRadius::same(1), stroke, StrokeKind::Inside);
+    painter.line_segment(
+        [
+            Pos2::new(box_rect.min.x + 3.0, box_rect.center().y),
+            Pos2::new(box_rect.max.x - 3.0, box_rect.center().y),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            Pos2::new(box_rect.min.x + 3.0, box_rect.center().y + 4.0),
+            Pos2::new(box_rect.max.x - 6.0, box_rect.center().y + 4.0),
+        ],
+        stroke,
+    );
+}
+
+fn draw_translate_icon(painter: &Painter, rect: EguiRect, color: Color32) {
+    let stroke = Stroke::new(1.6, color);
+    let center = rect.center();
+    painter.line_segment(
+        [
+            center + Vec2::new(-8.0, -5.0),
+            center + Vec2::new(2.0, -5.0),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            center + Vec2::new(-3.0, -9.0),
+            center + Vec2::new(-3.0, 3.0),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [center + Vec2::new(3.0, 7.0), center + Vec2::new(9.0, 7.0)],
+        stroke,
+    );
+    painter.line_segment(
+        [center + Vec2::new(6.0, 1.0), center + Vec2::new(10.0, 11.0)],
+        stroke,
+    );
+    painter.line_segment(
+        [center + Vec2::new(6.0, 1.0), center + Vec2::new(2.0, 11.0)],
+        stroke,
+    );
+    painter.line_segment(
+        [center + Vec2::new(-8.0, 8.0), center + Vec2::new(9.0, -8.0)],
+        stroke,
+    );
 }
 
 fn draw_toolbar_tooltip(painter: &Painter, canvas: EguiRect, button: EguiRect, label: &str) {
@@ -417,4 +484,45 @@ pub(crate) fn draw_pin_border(painter: &Painter, canvas: EguiRect) {
         Stroke::new(1.0, Color32::from_black_alpha(120)),
         StrokeKind::Inside,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::cli::OverlayLanguage;
+
+    #[test]
+    fn toolbar_contains_capture_and_text_actions() {
+        let text = OverlayText::new(OverlayLanguage::En);
+        let canvas = EguiRect::from_min_size(Pos2::ZERO, Vec2::new(320.0, 240.0));
+        let selection = EguiRect::from_min_size(Pos2::new(40.0, 40.0), Vec2::new(160.0, 80.0));
+        let toolbar = toolbar_rect(canvas, selection, text);
+        let actions = toolbar_buttons(toolbar, text)
+            .into_iter()
+            .map(|button| button.action)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            actions,
+            vec![
+                CaptureAction::Pin,
+                CaptureAction::Copy,
+                CaptureAction::Save,
+                CaptureAction::Ocr,
+                CaptureAction::Translate,
+            ]
+        );
+    }
+
+    #[test]
+    fn toolbar_width_matches_button_count() {
+        let text = OverlayText::new(OverlayLanguage::En);
+
+        assert_eq!(
+            toolbar_width(text),
+            TOOLBAR_PADDING * 2.0
+                + TOOLBAR_BUTTON_SIZE * TOOLBAR_BUTTON_COUNT as f32
+                + TOOLBAR_BUTTON_GAP * (TOOLBAR_BUTTON_COUNT - 1) as f32
+        );
+    }
 }

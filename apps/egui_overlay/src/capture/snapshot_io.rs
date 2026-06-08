@@ -6,6 +6,7 @@ use eframe::egui::{
     ColorImage, Context, Pos2, Rect as EguiRect, TextureHandle, TextureOptions, Vec2,
 };
 use image::{DynamicImage, GenericImageView};
+use perf_trace::{PerfSpan, log_elapsed};
 use serde::Deserialize;
 
 use crate::runtime::control::SharedSnapshotCommand;
@@ -86,6 +87,11 @@ pub(crate) fn load_shared_snapshot(
     snapshot: &SharedSnapshotCommand,
     text: OverlayText,
 ) -> Result<LoadedSharedSnapshot, String> {
+    let mut span = PerfSpan::new("overlay_load_shared_snapshot_total")
+        .field("width", snapshot.width)
+        .field("height", snapshot.height)
+        .field("format", &snapshot.format)
+        .field("bytes", snapshot.byte_len);
     let expected_len = snapshot.width as usize * snapshot.height as usize * 4;
     if snapshot.width == 0 || snapshot.height == 0 || snapshot.byte_len != expected_len {
         return Err(format!(
@@ -94,13 +100,21 @@ pub(crate) fn load_shared_snapshot(
         ));
     }
 
+    let platform_start = std::time::Instant::now();
     let bytes = platform_runtime::create_platform()
         .shared_memory()
         .open(&snapshot.mapping_name, snapshot.byte_len)
         .map_err(|error| format!("{}: {error}", text.snapshot_load_failed))?;
-    let rgba = image::RgbaImage::from_raw(snapshot.width, snapshot.height, bytes)
+    log_elapsed("overlay_shared_memory_open", platform_start);
+    let convert_start = std::time::Instant::now();
+    let rgba = snapshot_bytes_to_rgba(snapshot, bytes)
         .ok_or_else(|| format!("{}: invalid RGBA buffer", text.snapshot_load_failed))?;
+    log_elapsed("overlay_shared_snapshot_to_rgba", convert_start);
+    let tiles_start = std::time::Instant::now();
     let tiles = build_snapshot_tiles(ctx, &rgba);
+    log_elapsed("overlay_snapshot_texture_tiles_build", tiles_start);
+    span.add_field("tiles", tiles.len());
+    span.finish();
 
     Ok(LoadedSharedSnapshot {
         image: DynamicImage::ImageRgba8(rgba),
@@ -108,19 +122,45 @@ pub(crate) fn load_shared_snapshot(
     })
 }
 
+fn snapshot_bytes_to_rgba(
+    snapshot: &SharedSnapshotCommand,
+    mut bytes: Vec<u8>,
+) -> Option<image::RgbaImage> {
+    match snapshot.format.trim().to_ascii_lowercase().as_str() {
+        "rgba8" | "rgba" => image::RgbaImage::from_raw(snapshot.width, snapshot.height, bytes),
+        "bgra8" | "bgra" => {
+            for pixel in bytes.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+                pixel[3] = 255;
+            }
+            image::RgbaImage::from_raw(snapshot.width, snapshot.height, bytes)
+        }
+        other => {
+            log::error!("unsupported shared snapshot format {other}");
+            None
+        }
+    }
+}
+
 pub(crate) fn load_snapshot(
     ctx: &Context,
     path: Option<&PathBuf>,
     text: OverlayText,
 ) -> (Option<DynamicImage>, Vec<SnapshotTile>, Option<String>) {
+    let span = PerfSpan::new("overlay_load_snapshot_file_total");
     let Some(path) = path else {
         return (None, Vec::new(), Some(text.missing_snapshot.to_owned()));
     };
 
     match image::open(path) {
         Ok(image) => {
+            let convert_start = std::time::Instant::now();
             let rgba = image.to_rgba8();
+            log_elapsed("overlay_snapshot_file_to_rgba", convert_start);
+            let tiles_start = std::time::Instant::now();
             let tiles = build_snapshot_tiles(ctx, &rgba);
+            log_elapsed("overlay_snapshot_file_texture_tiles_build", tiles_start);
+            span.finish();
             (Some(DynamicImage::ImageRgba8(rgba)), tiles, None)
         }
         Err(error) => (
@@ -132,6 +172,9 @@ pub(crate) fn load_snapshot(
 }
 
 fn build_snapshot_tiles(ctx: &Context, image: &image::RgbaImage) -> Vec<SnapshotTile> {
+    let mut span = PerfSpan::new("overlay_build_snapshot_tiles")
+        .field("width", image.width())
+        .field("height", image.height());
     let max_texture_side = ctx.input(|input| input.max_texture_side.max(1)) as u32;
     let tile_side = max_texture_side.min(1024).max(1);
     let image_width = image.width();
@@ -163,6 +206,9 @@ fn build_snapshot_tiles(ctx: &Context, image: &image::RgbaImage) -> Vec<Snapshot
         y += height;
     }
 
+    span.add_field("tile_side", tile_side);
+    span.add_field("tiles", tiles.len());
+    span.finish();
     tiles
 }
 
@@ -171,14 +217,24 @@ pub(crate) fn crop_snapshot_to_file(
     selection: EguiRect,
     text: &OverlayText,
 ) -> Result<CroppedSnapshot, String> {
+    let mut span = PerfSpan::new("overlay_crop_snapshot_to_file_total")
+        .field("selection_width", selection.width().round())
+        .field("selection_height", selection.height().round());
+    let crop_start = std::time::Instant::now();
     let cropped = crop_snapshot(snapshot, selection);
+    log_elapsed("overlay_crop_snapshot", crop_start);
     let width = cropped.width();
     let height = cropped.height();
     let image_path = std::env::temp_dir().join(capture_file_name());
 
+    let save_start = std::time::Instant::now();
     cropped
         .save(&image_path)
         .map_err(|error| format!("{}: {error}", text.crop_failed))?;
+    log_elapsed("overlay_crop_snapshot_save_png", save_start);
+    span.add_field("width", width);
+    span.add_field("height", height);
+    span.finish();
     Ok(CroppedSnapshot {
         path: image_path,
         width,
@@ -221,17 +277,26 @@ pub(crate) fn copy_snapshot_to_clipboard(
     selection: EguiRect,
     text: &OverlayText,
 ) -> Result<(), String> {
+    let span = PerfSpan::new("overlay_copy_snapshot_to_clipboard_total")
+        .field("selection_width", selection.width().round())
+        .field("selection_height", selection.height().round());
+    let crop_start = std::time::Instant::now();
     let cropped = crop_snapshot(snapshot, selection);
+    log_elapsed("overlay_clipboard_crop_snapshot", crop_start);
     let image = arboard::ImageData {
         width: cropped.width() as usize,
         height: cropped.height() as usize,
         bytes: Cow::Owned(cropped.into_raw()),
     };
+    let clipboard_start = std::time::Instant::now();
     let mut clipboard =
         arboard::Clipboard::new().map_err(|error| format!("{}: {error}", text.copy_failed))?;
     clipboard
         .set_image(image)
-        .map_err(|error| format!("{}: {error}", text.copy_failed))
+        .map_err(|error| format!("{}: {error}", text.copy_failed))?;
+    log_elapsed("overlay_clipboard_set_image", clipboard_start);
+    span.finish();
+    Ok(())
 }
 
 fn crop_snapshot(snapshot: &DynamicImage, selection: EguiRect) -> image::RgbaImage {

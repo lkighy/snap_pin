@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 ct2rs = { version = "0.9.19", default-features = false, features = ["sentencepiece", "ruy"], optional = true }
+perf_trace.workspace = true
 shared_models.workspace = true
 
 [features]

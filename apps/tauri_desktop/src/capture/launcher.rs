@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ab_glyph::{FontArc, PxScale};
 use image::{DynamicImage, ImageBuffer, Rgba, RgbaImage};
 use imageproc::drawing::{draw_text_mut, text_size};
+use perf_trace::{PerfSpan, log_elapsed};
 use platform_api::{
     CaptureWindowRegion, ClipboardPayload, HotkeyRegistration, HotkeyToken, SharedMemoryHandle,
 };
@@ -29,6 +30,7 @@ const OVERLAY_CONTROL_PORT: u16 = 47232;
 const OVERLAY_CONTROL_PROTOCOL: u32 = 2;
 const OVERLAY_READY_TIMEOUT: Duration = Duration::from_millis(15_000);
 const OVERLAY_COMMAND_TIMEOUT: Duration = Duration::from_millis(5_500);
+const OVERLAY_CONNECT_TIMEOUT: Duration = Duration::from_millis(120);
 const OVERLAY_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(1_500);
 const RECENT_MAPPING_LIMIT: usize = 4;
 const CLIPBOARD_TEXT_MAX_CHARS: usize = 20_000;
@@ -212,42 +214,66 @@ pub fn launch_capture_overlay_for_settings(
     app: &AppHandle,
     settings: &Settings,
 ) -> Result<(), String> {
+    let mut span = PerfSpan::new("capture_overlay_launch_total")
+        .field("include_cursor", settings.capture.include_cursor)
+        .field("delay_ms", settings.capture.capture_delay_ms);
     log::info!(
         "launching capture overlay include_cursor={} language={}",
         settings.capture.include_cursor,
         settings.interface.language
     );
+    let resident_start = std::time::Instant::now();
     ensure_overlay_resident_for_settings(app, settings)?;
+    log_elapsed("capture_overlay_ensure_resident", resident_start);
 
     if settings.capture.capture_delay_ms > 0 {
+        let delay_start = std::time::Instant::now();
         thread::sleep(Duration::from_millis(settings.capture.capture_delay_ms));
+        log_elapsed("capture_overlay_delay_wait", delay_start);
     }
 
+    let model_registry_start = std::time::Instant::now();
     let model_registry_path = models::models_path(app)
         .ok()
         .map(|path| path.to_string_lossy().into_owned());
+    log_elapsed("capture_overlay_model_registry_path", model_registry_start);
+    let snapshot_start = std::time::Instant::now();
     let snapshot = capture_snapshot(settings.capture.include_cursor)?;
+    log_elapsed("capture_overlay_capture_snapshot", snapshot_start);
     let command = OverlayCaptureCommand::from_settings(settings, &snapshot)
         .with_model_registry_path(model_registry_path.clone());
     let managed = app.state::<Mutex<CaptureOverlayRuntime>>();
+    let lock_start = std::time::Instant::now();
     let mut runtime = managed
         .lock()
         .map_err(|_| "overlay runtime lock poisoned".to_owned())?;
+    log_elapsed("capture_overlay_runtime_lock", lock_start);
 
+    let keep_mapping_start = std::time::Instant::now();
+    runtime.keep_mapping(snapshot.mapping);
+    log_elapsed("capture_overlay_keep_mapping", keep_mapping_start);
+
+    let command_start = std::time::Instant::now();
     if let Err(first_error) = send_capture_command(&command) {
         log::warn!("capture command failed; restarting resident overlay: {first_error}");
+        let restart_start = std::time::Instant::now();
         ensure_overlay_resident_locked(app, settings, &mut runtime)?;
+        log_elapsed("capture_overlay_restart_resident", restart_start);
         send_capture_command(&command)
             .map_err(|second_error| format!("{first_error}; retry failed: {second_error}"))?;
     }
+    log_elapsed("capture_overlay_send_capture_command", command_start);
 
-    runtime.keep_mapping(snapshot.mapping);
     log::info!(
         "capture overlay launched snapshot={}x{} bytes={}",
         command.snapshot.width,
         command.snapshot.height,
         command.snapshot.byte_len
     );
+    span.add_field("width", command.snapshot.width);
+    span.add_field("height", command.snapshot.height);
+    span.add_field("bytes", command.snapshot.byte_len);
+    span.finish();
 
     Ok(())
 }
@@ -380,18 +406,23 @@ fn ensure_overlay_resident_locked(
     settings: &Settings,
     runtime: &mut CaptureOverlayRuntime,
 ) -> Result<(), String> {
+    let span = PerfSpan::new("overlay_resident_ensure_locked");
     if overlay_server_ready() {
         if runtime.process.is_some() {
             log::info!("resident overlay server already ready");
+            span.finish();
             return Ok(());
         }
 
         log::warn!("resident overlay server is ready but untracked; requesting shutdown");
+        let shutdown_start = std::time::Instant::now();
         send_shutdown_command()?;
         wait_for_overlay_server_shutdown(OVERLAY_SHUTDOWN_TIMEOUT)?;
+        log_elapsed("overlay_resident_shutdown_untracked", shutdown_start);
     }
 
     if let Some(process) = runtime.process.as_mut() {
+        let inspect_start = std::time::Instant::now();
         if process
             .try_wait()
             .map_err(|error| error.to_string())?
@@ -400,44 +431,64 @@ fn ensure_overlay_resident_locked(
             log::warn!("tracked resident overlay process exited");
             runtime.process = None;
         }
+        log_elapsed("overlay_resident_inspect_process", inspect_start);
     }
 
     if let Some(mut process) = runtime.process.take() {
         log::info!("restarting resident overlay process pid={}", process.id());
+        let kill_start = std::time::Instant::now();
         let _ = process.kill();
         let _ = process.wait();
+        log_elapsed("overlay_resident_kill_previous", kill_start);
     }
 
     if runtime.process.is_none() {
+        let resolve_start = std::time::Instant::now();
         let launch = overlay_launch(app)?;
+        log_elapsed("overlay_resident_resolve_launch", resolve_start);
+        let registry_start = std::time::Instant::now();
         let model_registry_path = models::models_path(app)
             .ok()
             .map(|path| path.to_string_lossy().into_owned());
+        log_elapsed("overlay_resident_model_registry_path", registry_start);
+        let args_start = std::time::Instant::now();
         let args =
             resident_overlay_args(settings, model_registry_path.as_deref(), std::process::id());
+        log_elapsed("overlay_resident_build_args", args_start);
         log::info!("starting resident overlay via {}", launch.description());
+        let command_start = std::time::Instant::now();
         let mut command = launch.command(args);
         command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        log_elapsed("overlay_resident_build_command", command_start);
+        let spawn_start = std::time::Instant::now();
         let child = command
             .spawn()
             .map_err(|error| format!("failed to launch resident screenshot overlay: {error}"))?;
+        log_elapsed("overlay_resident_spawn_process", spawn_start);
         log::info!("resident overlay process started pid={}", child.id());
         runtime.process = Some(child);
     }
 
-    wait_for_overlay_server(runtime.process.as_mut(), OVERLAY_READY_TIMEOUT)
+    let wait_start = std::time::Instant::now();
+    let result = wait_for_overlay_server(runtime.process.as_mut(), OVERLAY_READY_TIMEOUT);
+    log_elapsed("overlay_resident_wait_ready", wait_start);
+    if result.is_ok() {
+        span.finish();
+    }
+    result
 }
 
 fn overlay_server_ready() -> bool {
-    let Ok(mut stream) = TcpStream::connect(control_addr()) else {
+    let Ok(mut stream) = TcpStream::connect_timeout(&control_addr(), OVERLAY_CONNECT_TIMEOUT)
+    else {
         return false;
     };
 
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(120)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(120)));
+    let _ = stream.set_read_timeout(Some(OVERLAY_CONNECT_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(OVERLAY_CONNECT_TIMEOUT));
     let ping = format!("{{\"kind\":\"ping\",\"protocol\":{OVERLAY_CONTROL_PROTOCOL}}}\n");
     if stream.write_all(ping.as_bytes()).is_err() {
         return false;
@@ -508,20 +559,27 @@ fn send_shutdown_command() -> Result<(), String> {
 }
 
 fn send_overlay_command(json: &str, label: &str) -> Result<(), String> {
-    let mut stream = TcpStream::connect(control_addr())
+    let span = PerfSpan::new("overlay_control_command").field("label", label);
+    let connect_start = std::time::Instant::now();
+    let mut stream = TcpStream::connect_timeout(&control_addr(), OVERLAY_CONNECT_TIMEOUT)
         .map_err(|error| format!("failed to connect to resident screenshot overlay: {error}"))?;
+    log_elapsed("overlay_control_connect", connect_start);
     let _ = stream.set_write_timeout(Some(OVERLAY_COMMAND_TIMEOUT));
     let _ = stream.set_read_timeout(Some(OVERLAY_COMMAND_TIMEOUT));
+    let write_start = std::time::Instant::now();
     stream
         .write_all(json.as_bytes())
         .and_then(|_| stream.write_all(b"\n"))
         .and_then(|_| stream.flush())
         .map_err(|error| format!("failed to send {label} command: {error}"))?;
+    log_elapsed("overlay_control_write", write_start);
 
     let mut response = String::new();
+    let read_start = std::time::Instant::now();
     let count = BufReader::new(stream)
         .read_line(&mut response)
         .map_err(|error| format!("failed to read {label} command response: {error}"))?;
+    log_elapsed("overlay_control_read_response", read_start);
     if count == 0 {
         return Err(format!(
             "resident screenshot overlay closed the {label} command connection"
@@ -531,13 +589,20 @@ fn send_overlay_command(json: &str, label: &str) -> Result<(), String> {
     match serde_json::from_str::<OverlayControlResponse>(&response) {
         Ok(response) if response.kind == "accepted" => {
             log::info!("resident overlay accepted {label} command");
+            span.finish();
             Ok(())
         }
         Ok(response) if response.kind == "error" => {
             let message = response.message.unwrap_or_else(|| {
                 format!("resident screenshot overlay rejected the {label} command")
             });
-            log::error!("resident overlay rejected {label} command: {message}");
+            if label == "pin selection" && message == "capture_overlay_inactive" {
+                log::info!(
+                    "resident overlay skipped {label} command because capture overlay is inactive"
+                );
+            } else {
+                log::error!("resident overlay rejected {label} command: {message}");
+            }
             Err(message)
         }
         Ok(response) => Err(format!(
@@ -1077,6 +1142,7 @@ impl OverlayCaptureCommand {
                 byte_len: snapshot.byte_len,
                 width: snapshot.width,
                 height: snapshot.height,
+                format: image_format_name(snapshot.format).to_owned(),
                 origin_x: snapshot.bounds.origin.x,
                 origin_y: snapshot.bounds.origin.y,
             },
@@ -1211,8 +1277,17 @@ struct SharedSnapshotCommand {
     byte_len: usize,
     width: u32,
     height: u32,
+    format: String,
     origin_x: f32,
     origin_y: f32,
+}
+
+fn image_format_name(format: shared_models::ImageFormat) -> &'static str {
+    match format {
+        shared_models::ImageFormat::Rgba8 => "rgba8",
+        shared_models::ImageFormat::Bgra8 => "bgra8",
+        shared_models::ImageFormat::Png => "png",
+    }
 }
 
 #[derive(Debug, Deserialize)]

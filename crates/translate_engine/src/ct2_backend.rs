@@ -1,13 +1,54 @@
 use shared_models::{LanguageCode, TranslationRequest, TranslationResult};
 
+use perf_trace::{PerfSpan, log_elapsed};
+
 use crate::{TranslateEngineError, TranslationModelBundle};
 
 pub fn translate(
     bundle: &TranslationModelBundle,
     request: &TranslationRequest,
 ) -> Result<TranslationResult, TranslateEngineError> {
+    let span = PerfSpan::new("ct2_backend_translate_total")
+        .field("model_id", &bundle.manifest.id)
+        .field("target", &request.target_language.0)
+        .field("source_chars", request.source_text.chars().count());
+    let defaults_start = std::time::Instant::now();
     let request = request_with_model_defaults(bundle, request)?;
-    translate_with_runtime(bundle, &request)
+    log_elapsed("ct2_backend_request_defaults", defaults_start);
+    let runtime_start = std::time::Instant::now();
+    let result = translate_with_runtime(bundle, &request);
+    log_elapsed("ct2_backend_translate_with_runtime", runtime_start);
+    if result.is_ok() {
+        span.finish();
+    }
+    result
+}
+
+pub fn translate_batch(
+    bundle: &TranslationModelBundle,
+    requests: &[TranslationRequest],
+) -> Result<Vec<TranslationResult>, TranslateEngineError> {
+    let span = PerfSpan::new("ct2_backend_translate_batch_total")
+        .field("model_id", &bundle.manifest.id)
+        .field("requests", requests.len());
+    if requests.is_empty() {
+        span.finish();
+        return Ok(Vec::new());
+    }
+
+    let defaults_start = std::time::Instant::now();
+    let requests = requests
+        .iter()
+        .map(|request| request_with_model_defaults(bundle, request))
+        .collect::<Result<Vec<_>, _>>()?;
+    log_elapsed("ct2_backend_batch_request_defaults", defaults_start);
+    let runtime_start = std::time::Instant::now();
+    let result = translate_batch_with_runtime(bundle, &requests);
+    log_elapsed("ct2_backend_batch_translate_with_runtime", runtime_start);
+    if result.is_ok() {
+        span.finish();
+    }
+    result
 }
 
 pub fn runtime_status() -> &'static str {
@@ -22,9 +63,15 @@ fn request_with_model_defaults(
     bundle: &TranslationModelBundle,
     request: &TranslationRequest,
 ) -> Result<TranslationRequest, TranslateEngineError> {
+    let span = PerfSpan::new("ct2_backend_request_with_model_defaults")
+        .field("model_id", &bundle.manifest.id)
+        .field("target", &request.target_language.0);
     let mut request = request.clone();
+    let source_start = std::time::Instant::now();
     request.source_language = resolved_source_language(bundle, request.source_language.as_ref());
+    log_elapsed("ct2_backend_resolve_source_language", source_start);
 
+    let pair_start = std::time::Instant::now();
     if !bundle.supports_language_pair(
         request
             .source_language
@@ -46,6 +93,8 @@ fn request_with_model_defaults(
             ),
         ));
     }
+    log_elapsed("ct2_backend_validate_language_pair", pair_start);
+    span.finish();
 
     Ok(request)
 }
@@ -68,6 +117,21 @@ fn translate_with_runtime(
     bundle: &TranslationModelBundle,
     request: &TranslationRequest,
 ) -> Result<TranslationResult, TranslateEngineError> {
+    translate_batch_with_runtime(bundle, std::slice::from_ref(request)).and_then(|mut results| {
+        results.pop().ok_or_else(|| {
+            TranslateEngineError::new(
+                "local_translation_empty",
+                "CTranslate2 returned no translation hypotheses",
+            )
+        })
+    })
+}
+
+#[cfg(feature = "local-translate-ct2")]
+fn translate_batch_with_runtime(
+    bundle: &TranslationModelBundle,
+    requests: &[TranslationRequest],
+) -> Result<Vec<TranslationResult>, TranslateEngineError> {
     use ct2rs::{
         Config, Device, TranslationOptions, Translator, tokenizers::sentencepiece::Tokenizer,
     };
@@ -81,6 +145,7 @@ fn translate_with_runtime(
             ),
         )
     })?;
+    let tokenizer_start = std::time::Instant::now();
     let tokenizer = Tokenizer::from_file(&bundle.source_tokenizer, &bundle.target_tokenizer)
         .map_err(|error| {
             TranslateEngineError::new(
@@ -92,10 +157,12 @@ fn translate_with_runtime(
                 ),
             )
         })?;
+    log_elapsed("ct2_backend_load_tokenizer", tokenizer_start);
     let config = Config {
         device: Device::CPU,
         ..Config::default()
     };
+    let translator_start = std::time::Instant::now();
     let translator =
         Translator::with_tokenizer(model_dir, tokenizer, &config).map_err(|error| {
             TranslateEngineError::new(
@@ -106,32 +173,45 @@ fn translate_with_runtime(
                 ),
             )
         })?;
+    log_elapsed("ct2_backend_create_translator", translator_start);
 
-    let sources = vec![request.source_text.clone()];
+    let sources = requests
+        .iter()
+        .map(|request| request.source_text.clone())
+        .collect::<Vec<_>>();
+    let batch_start = std::time::Instant::now();
     let results = translator
         .translate_batch(&sources, &TranslationOptions::default(), None)
         .map_err(|error| {
             TranslateEngineError::new("local_translation_failed", error.to_string())
         })?;
-    let translated_text = results
-        .into_iter()
-        .next()
-        .map(|(text, _score)| text)
-        .ok_or_else(|| {
-            TranslateEngineError::new(
-                "local_translation_empty",
-                "CTranslate2 returned no translation hypotheses",
-            )
-        })?;
+    log_elapsed("ct2_backend_translate_batch", batch_start);
+    let normalize_start = std::time::Instant::now();
+    if results.len() != requests.len() {
+        return Err(TranslateEngineError::new(
+            "local_translation_result_count_mismatch",
+            format!(
+                "CTranslate2 returned {} translations for {} requests",
+                results.len(),
+                requests.len()
+            ),
+        ));
+    }
+    let translations = requests
+        .iter()
+        .zip(results)
+        .map(|(request, (translated_text, _score))| TranslationResult {
+            request_id: request.id.clone(),
+            source_text: request.source_text.clone(),
+            translated_text,
+            source_language: request.source_language.clone(),
+            target_language: request.target_language.clone(),
+            provider: request.provider.clone(),
+        })
+        .collect::<Vec<_>>();
+    log_elapsed("ct2_backend_normalize_result", normalize_start);
 
-    Ok(TranslationResult {
-        request_id: request.id.clone(),
-        source_text: request.source_text.clone(),
-        translated_text,
-        source_language: request.source_language.clone(),
-        target_language: request.target_language.clone(),
-        provider: request.provider.clone(),
-    })
+    Ok(translations)
 }
 
 #[cfg(not(feature = "local-translate-ct2"))]
@@ -139,6 +219,21 @@ fn translate_with_runtime(
     _bundle: &TranslationModelBundle,
     _request: &TranslationRequest,
 ) -> Result<TranslationResult, TranslateEngineError> {
+    let span = PerfSpan::new("ct2_backend_translate_with_runtime_disabled");
+    span.finish();
+    Err(TranslateEngineError::new(
+        "local_translate_runtime_disabled",
+        "local translation runtime is not compiled; enable the 'local-translate-ct2' feature to use CTranslate2 translation",
+    ))
+}
+
+#[cfg(not(feature = "local-translate-ct2"))]
+fn translate_batch_with_runtime(
+    _bundle: &TranslationModelBundle,
+    _requests: &[TranslationRequest],
+) -> Result<Vec<TranslationResult>, TranslateEngineError> {
+    let span = PerfSpan::new("ct2_backend_translate_batch_with_runtime_disabled");
+    span.finish();
     Err(TranslateEngineError::new(
         "local_translate_runtime_disabled",
         "local translation runtime is not compiled; enable the 'local-translate-ct2' feature to use CTranslate2 translation",

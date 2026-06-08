@@ -56,6 +56,10 @@ fn default_ocr_provider() -> String {
     "local-mnn".to_owned()
 }
 
+fn default_snapshot_format() -> String {
+    "rgba8".to_owned()
+}
+
 fn default_translate_provider() -> String {
     "local-ct2".to_owned()
 }
@@ -259,6 +263,8 @@ pub(crate) struct SharedSnapshotCommand {
     pub(crate) byte_len: usize,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    #[serde(default = "default_snapshot_format")]
+    pub(crate) format: String,
     pub(crate) origin_x: f32,
     pub(crate) origin_y: f32,
 }
@@ -333,7 +339,7 @@ pub(crate) fn start_control_server(port: u16, queue: OverlayCommandQueue, ctx: C
                                         log::info!(
                                             "overlay capture command accepted by control thread"
                                         );
-                                        let result = queue_overlay_command_with_ack(
+                                        let result = queue_overlay_command(
                                             &queue,
                                             &ctx,
                                             OverlayCommand::Capture(command),
@@ -406,11 +412,27 @@ fn queue_overlay_command_with_ack(
                 "resident screenshot overlay did not process the {label} command in time"
             ))
         });
-    log::info!(
-        "overlay {label} command ACK result={}",
-        if result.is_ok() { "ok" } else { "error" }
-    );
+    let ack_status = match &result {
+        Ok(()) => "accepted",
+        Err(message) if label == "pin-selection" && message == "capture_overlay_inactive" => {
+            "inactive"
+        }
+        Err(_) => "rejected",
+    };
+    log::info!("overlay {label} command ACK status={ack_status}");
     result
+}
+
+fn queue_overlay_command(
+    queue: &OverlayCommandQueue,
+    ctx: &Context,
+    command: OverlayCommand,
+    label: &'static str,
+) -> Result<(), String> {
+    push_overlay_command(queue, QueuedOverlayCommand::new(command))?;
+    ctx.request_repaint();
+    log::info!("overlay {label} command queued without UI ACK");
+    Ok(())
 }
 
 fn push_overlay_command(

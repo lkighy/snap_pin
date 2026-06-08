@@ -12,6 +12,7 @@ imageproc = "0.25"
 ipc.workspace = true
 log.workspace = true
 model_registry.workspace = true
+perf_trace.workspace = true
 platform_api.workspace = true
 platform_runtime.workspace = true
 serde = { version = "1", features = ["derive"] }

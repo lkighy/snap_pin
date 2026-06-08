@@ -1,4 +1,4 @@
-use shared_models::Rect;
+use shared_models::{Point, Rect};
 
 use crate::PlatformError;
 
@@ -38,6 +38,12 @@ pub trait WindowOps: Send + Sync {
     ) -> Result<(), PlatformError>;
 
     fn park_window(&self, window: NativeWindowRef, bounds: Rect) -> Result<(), PlatformError>;
+
+    fn move_client_area_to(
+        &self,
+        window: NativeWindowRef,
+        position: Point,
+    ) -> Result<(), PlatformError>;
 
     fn suspend_for_modal(&self, window: NativeWindowRef) -> Result<(), PlatformError>;
 

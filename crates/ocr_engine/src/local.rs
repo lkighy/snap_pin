@@ -1,5 +1,7 @@
 use shared_models::{ImageData, ModelManifest, OcrJob, OcrLocalBackend, OcrProvider, OcrResult};
 
+use perf_trace::{PerfSpan, log_elapsed};
+
 use crate::{LocalOcrEngine, OcrEngineError, OcrModelBundle, ocr_rs_backend};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,9 +25,17 @@ impl LocalOcrEngine for PaddleOcrLocalEngine {
     }
 
     fn load_model(&mut self, model: &ModelManifest) -> Result<(), OcrEngineError> {
+        let span = PerfSpan::new("ocr_engine_load_model_total")
+            .field("model_id", &model.id)
+            .field("backend", &model.backend);
+        let bundle_start = std::time::Instant::now();
         let bundle = OcrModelBundle::from_manifest(model)?;
+        log_elapsed("ocr_engine_model_bundle_from_manifest", bundle_start);
+        let validate_start = std::time::Instant::now();
         validate_backend_matches_provider(&self.backend, model)?;
+        log_elapsed("ocr_engine_validate_backend", validate_start);
         self.loaded_bundle = Some(bundle);
+        span.finish();
         Ok(())
     }
 
@@ -41,7 +51,16 @@ impl LocalOcrEngine for PaddleOcrLocalEngine {
             ));
         };
 
-        ocr_rs_backend::recognize(bundle, job, image)
+        let span = PerfSpan::new("ocr_engine_recognize_local_total")
+            .field("backend", local_backend_name(&self.backend))
+            .field("image_bytes", image.bytes.len())
+            .field("width", image.metadata.pixel_size.width.round().max(1.0))
+            .field("height", image.metadata.pixel_size.height.round().max(1.0));
+        let result = ocr_rs_backend::recognize(bundle, job, image);
+        if result.is_ok() {
+            span.finish();
+        }
+        result
     }
 }
 

@@ -1,0 +1,8 @@
+[package]
+name = "perf_trace"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+log.workspace = true

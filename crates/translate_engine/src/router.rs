@@ -57,4 +57,35 @@ impl TranslateEngine for RoutedTranslateEngine {
             TranslateProvider::Custom(_) => self.mock.translate(request),
         }
     }
+
+    fn translate_batch(
+        &self,
+        requests: &[TranslationRequest],
+    ) -> Result<Vec<TranslationResult>, TranslateEngineError> {
+        let Some(first) = requests.first() else {
+            return Ok(Vec::new());
+        };
+
+        match &first.provider {
+            TranslateProvider::Disabled => Err(TranslateEngineError::new(
+                "translation_disabled",
+                "translation is disabled for this request",
+            )),
+            TranslateProvider::Local(TranslateLocalBackend::CTranslate2) => {
+                self.local_ct2.translate_batch(requests)
+            }
+            TranslateProvider::Local(TranslateLocalBackend::Custom(_)) => {
+                self.mock.translate_batch(requests)
+            }
+            TranslateProvider::ExternalApi(_) => Err(TranslateEngineError::new(
+                "translation_api_not_implemented",
+                "external translation APIs are scheduled after the local CTranslate2 MVP",
+            )),
+            TranslateProvider::Experimental(_) => Err(TranslateEngineError::new(
+                "translation_experimental_not_implemented",
+                "experimental translation backends are scheduled after the local CTranslate2 MVP",
+            )),
+            TranslateProvider::Custom(_) => self.mock.translate_batch(requests),
+        }
+    }
 }

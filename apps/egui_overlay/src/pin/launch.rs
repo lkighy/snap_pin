@@ -10,6 +10,7 @@ pub(crate) struct PinWindowLaunch<'a> {
     pub(crate) min_width: f32,
     pub(crate) min_height: f32,
     pub(crate) always_on_top: bool,
+    pub(crate) startup_action: &'a str,
     pub(crate) ocr_provider: &'a str,
     pub(crate) ocr_language_hint: Option<&'a str>,
     pub(crate) ocr_default_model_id: Option<&'a str>,
@@ -37,7 +38,7 @@ pub(crate) struct PinWindowLaunch<'a> {
 pub(crate) fn spawn_pin_window(launch: &PinWindowLaunch<'_>) -> Result<(), String> {
     let current_exe = std::env::current_exe().map_err(|error| error.to_string())?;
     log::info!(
-        "spawning pin window exe={} image={} x={} y={} width={} height={} opacity={} zoom_step={} always_on_top={} owner_pid={:?}",
+        "spawning pin window exe={} image={} x={} y={} width={} height={} opacity={} zoom_step={} always_on_top={} startup_action={} owner_pid={:?}",
         current_exe.display(),
         launch.image_path.display(),
         launch.x,
@@ -47,6 +48,7 @@ pub(crate) fn spawn_pin_window(launch: &PinWindowLaunch<'_>) -> Result<(), Strin
         launch.opacity,
         launch.zoom_step,
         launch.always_on_top,
+        launch.startup_action,
         launch.owner_pid
     );
     let mut command = std::process::Command::new(current_exe);
@@ -72,6 +74,8 @@ pub(crate) fn spawn_pin_window(launch: &PinWindowLaunch<'_>) -> Result<(), Strin
         .arg(format!("{}", launch.min_height))
         .arg("--pin-always-on-top")
         .arg(format!("{}", launch.always_on_top))
+        .arg("--pin-startup-action")
+        .arg(launch.startup_action)
         .arg("--ocr-provider")
         .arg(launch.ocr_provider)
         .arg("--ocr-language-hint")

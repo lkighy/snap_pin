@@ -9,6 +9,7 @@ ipc.workspace = true
 log.workspace = true
 model_registry.workspace = true
 ocr_engine.workspace = true
+perf_trace.workspace = true
 platform_api.workspace = true
 shared_models.workspace = true
 translate_engine.workspace = true

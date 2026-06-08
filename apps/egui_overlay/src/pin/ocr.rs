@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use model_registry::ModelRegistry;
 use ocr_engine::{OcrEngine, RoutedOcrEngine};
+use perf_trace::{PerfSpan, log_elapsed};
 use shared_models::{
     ImageData, ImageFormat, ImageId, ImageMetadata, OcrExternalProvider, OcrJob, OcrLocalBackend,
     OcrProvider, OcrResult, Point, Rect, Size,
@@ -17,11 +18,17 @@ pub(crate) struct PinOcrRequest {
 }
 
 pub(crate) fn recognize_pin_image(request: PinOcrRequest) -> Result<OcrResult, String> {
+    let mut span = PerfSpan::new("pin_ocr_recognize_image_total")
+        .field("provider", ocr_provider_label(&request.provider));
+    let image_open_start = std::time::Instant::now();
     let image = image::open(&request.path)
         .map_err(|error| format!("{}: {error}", request.load_error_prefix))?
         .to_rgba8();
+    log_elapsed("pin_ocr_image_open_to_rgba", image_open_start);
     let width = image.width();
     let height = image.height();
+    span.add_field("width", width);
+    span.add_field("height", height);
     let image_id = ImageId::new(format!("pin-{}", pin_image_id_from_path(&request.path)));
     let image_data = ImageData {
         id: image_id.clone(),
@@ -47,33 +54,55 @@ pub(crate) fn recognize_pin_image(request: PinOcrRequest) -> Result<OcrResult, S
     };
 
     if job.provider == OcrProvider::System {
+        let platform_start = std::time::Instant::now();
         let platform = platform_runtime::create_platform();
-        return platform
+        log_elapsed("pin_ocr_system_create_platform", platform_start);
+        let recognize_start = std::time::Instant::now();
+        let result = platform
             .system_ocr()
             .recognize(&job, &image_data)
             .map_err(|error| error.message);
+        log_elapsed("pin_ocr_system_recognize", recognize_start);
+        if result.is_ok() {
+            span.finish();
+        }
+        return result;
     }
 
+    let engine_start = std::time::Instant::now();
     let mut engine = RoutedOcrEngine::default();
+    log_elapsed("pin_ocr_create_routed_engine", engine_start);
     if matches!(job.provider, OcrProvider::Local(_)) {
+        let registry_start = std::time::Instant::now();
         let registry = load_model_registry(request.models_registry.as_deref());
+        log_elapsed("pin_ocr_load_model_registry", registry_start);
+        let selection_start = std::time::Instant::now();
         let model = job
             .model_id
             .as_deref()
             .and_then(|model_id| registry.find(model_id))
             .or_else(|| registry.recommended_ocr());
+        log_elapsed("pin_ocr_select_model", selection_start);
 
         if let Some(model) = model {
             if job.model_id.is_none() {
                 job.model_id = Some(model.id.clone());
             }
+            let load_start = std::time::Instant::now();
             engine.load_model(model).map_err(|error| error.message)?;
+            log_elapsed("pin_ocr_load_model", load_start);
         }
     }
 
-    engine
+    let recognize_start = std::time::Instant::now();
+    let result = engine
         .recognize(&job, &image_data)
-        .map_err(|error| error.message)
+        .map_err(|error| error.message);
+    log_elapsed("pin_ocr_engine_recognize", recognize_start);
+    if result.is_ok() {
+        span.finish();
+    }
+    result
 }
 
 pub(crate) fn parse_ocr_provider(value: &str) -> OcrProvider {
@@ -123,6 +152,23 @@ fn load_model_registry(path: Option<&std::path::Path>) -> ModelRegistry {
     }
 
     registry
+}
+
+fn ocr_provider_label(provider: &OcrProvider) -> &'static str {
+    match provider {
+        OcrProvider::Disabled => "disabled",
+        OcrProvider::System => "system",
+        OcrProvider::Local(OcrLocalBackend::Mnn) => "local-mnn",
+        OcrProvider::Local(OcrLocalBackend::OnnxRuntime) => "local-onnx",
+        OcrProvider::Local(OcrLocalBackend::PaddleRuntime) => "local-paddle",
+        OcrProvider::Local(OcrLocalBackend::Custom(_)) => "local-custom",
+        OcrProvider::ExternalApi(OcrExternalProvider::OpenAi) => "api-openai",
+        OcrProvider::ExternalApi(OcrExternalProvider::AzureVision) => "api-azure",
+        OcrProvider::ExternalApi(OcrExternalProvider::GoogleVision) => "api-google",
+        OcrProvider::ExternalApi(OcrExternalProvider::BaiduOcr) => "api-baidu",
+        OcrProvider::ExternalApi(OcrExternalProvider::TencentOcr) => "api-tencent",
+        OcrProvider::ExternalApi(OcrExternalProvider::Custom(_)) => "api-custom",
+    }
 }
 
 fn pin_image_id_from_path(path: &std::path::Path) -> String {

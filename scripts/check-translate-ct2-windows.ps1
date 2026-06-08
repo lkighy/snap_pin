@@ -110,6 +110,12 @@ foreach ($path in $ExtraPath) {
     }
 }
 
+$repoMnnDllDir = Join-Path (Get-Location) "third_party\ocr-rs-2.2.2\3rd_party\prebuilt\mnn-dev-windows-x86_64\lib"
+if (Test-Path (Join-Path $repoMnnDllDir "MNN.dll")) {
+    $env:PATH = "$repoMnnDllDir;$env:PATH"
+    Write-Host "Added MNN.dll directory to PATH for this task: $repoMnnDllDir"
+}
+
 $effectiveCargoArgs = if ($CargoArgsJson.Trim()) {
     @($CargoArgsJson | ConvertFrom-Json) | ForEach-Object { [string]$_ }
 } elseif ($CargoArgs.Count -gt 0) {

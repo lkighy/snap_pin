@@ -4,6 +4,7 @@ use std::thread;
 
 use model_registry::ModelRegistry;
 use ocr_engine::{OcrEngine, OcrEngineError, RoutedOcrEngine};
+use perf_trace::{PerfSpan, log_elapsed};
 use platform_api::{AppPlatform, PlatformCapabilities};
 use shared_models::{
     CoreCommand, CoreEvent, ImageData, LanguageCode, OcrJob, OcrProvider, Settings,
@@ -210,6 +211,8 @@ impl CoreService {
     }
 
     fn run_ocr(&mut self, mut job: OcrJob) -> Vec<CoreEvent> {
+        let mut span = PerfSpan::new("core_run_ocr_prepare_total")
+            .field("provider", ocr_provider_label(&job.provider));
         if job.provider == OcrProvider::Disabled {
             job.provider = self.settings.ocr.provider.clone();
         }
@@ -226,10 +229,15 @@ impl CoreService {
             job.provider
         );
         let mut events = vec![self.ocr.enqueue(job.clone())];
+        let model_start = std::time::Instant::now();
         self.apply_default_ocr_model(&mut job);
+        log_elapsed("core_ocr_apply_default_model", model_start);
+        let profiles_start = std::time::Instant::now();
         self.ocr_engine
             .configure_provider_profiles(&self.settings.ocr.provider_profiles);
+        log_elapsed("core_ocr_configure_provider_profiles", profiles_start);
 
+        let image_lookup_start = std::time::Instant::now();
         let Some(image) = self.screenshot.image(&job.image_id) else {
             log::error!("core ocr image missing image={}", job.image_id.0);
             events.push(CoreEvent::Error {
@@ -238,36 +246,60 @@ impl CoreService {
             });
             return events;
         };
+        log_elapsed("core_ocr_lookup_image", image_lookup_start);
 
         let image = image.clone();
+        span.add_field("image_bytes", image.bytes.len());
+        span.add_field("width", image.metadata.pixel_size.width.round().max(1.0));
+        span.add_field("height", image.metadata.pixel_size.height.round().max(1.0));
         let history = Arc::clone(&self.history);
         let save_history = self.settings.history.enabled;
         let sender = self.ocr.completion_sender();
         let engine = self.ocr_engine.clone();
         let platform = self.platform.clone();
+        let spawn_start = std::time::Instant::now();
         thread::spawn(move || {
+            let worker_span = PerfSpan::new("core_ocr_worker_total")
+                .field("provider", ocr_provider_label(&job.provider))
+                .field("image_bytes", image.bytes.len());
+            let recognize_start = std::time::Instant::now();
             let event = match recognize_ocr_job(&engine, platform, &job, &image) {
                 Ok(result) => {
+                    log_elapsed("core_ocr_worker_recognize", recognize_start);
                     if save_history {
+                        let history_start = std::time::Instant::now();
                         history
                             .lock()
                             .expect("history lock poisoned")
                             .push_ocr(result.clone());
+                        log_elapsed("core_ocr_worker_save_history", history_start);
                     }
                     CoreEvent::OcrCompleted { result }
                 }
-                Err(error) => CoreEvent::Error {
-                    code: error.code,
-                    message: error.message,
-                },
+                Err(error) => {
+                    log_elapsed("core_ocr_worker_recognize", recognize_start);
+                    CoreEvent::Error {
+                        code: error.code,
+                        message: error.message,
+                    }
+                }
             };
+            let send_start = std::time::Instant::now();
             let _ = sender.send(event);
+            log_elapsed("core_ocr_worker_send_event", send_start);
+            worker_span.finish();
         });
+        log_elapsed("core_ocr_spawn_worker", spawn_start);
+        span.finish();
 
         events
     }
 
     fn run_translation(&mut self, mut request: TranslationRequest) -> Vec<CoreEvent> {
+        let mut span = PerfSpan::new("core_run_translation_prepare_total")
+            .field("provider", translate_provider_label(&request.provider))
+            .field("target", &request.target_language.0)
+            .field("source_chars", request.source_text.chars().count());
         log::info!(
             "core starting translation request={} provider={:?} target={} source_chars={}",
             request.id,
@@ -277,7 +309,9 @@ impl CoreService {
         );
         let mut events = vec![self.translate.enqueue(request.clone())];
 
+        let model_start = std::time::Instant::now();
         if let Err(error) = self.apply_default_translation_model(&mut request) {
+            log_elapsed("core_translation_apply_default_model", model_start);
             log::error!(
                 "core failed to prepare translation request={} code={} message={}",
                 request.id,
@@ -290,19 +324,30 @@ impl CoreService {
             });
             return events;
         }
+        log_elapsed("core_translation_apply_default_model", model_start);
 
         let history = Arc::clone(&self.history);
         let save_history = self.settings.history.enabled;
         let sender = self.translate.completion_sender();
         let engine = self.translate_engine.clone();
+        span.add_field("model_id", request.model_id.as_deref().unwrap_or("none"));
+        let spawn_start = std::time::Instant::now();
         thread::spawn(move || {
+            let worker_span = PerfSpan::new("core_translation_worker_total")
+                .field("provider", translate_provider_label(&request.provider))
+                .field("target", &request.target_language.0)
+                .field("source_chars", request.source_text.chars().count());
+            let translate_start = std::time::Instant::now();
             let event = match engine.translate(&request) {
                 Ok(result) => {
+                    log_elapsed("core_translation_worker_translate", translate_start);
                     if save_history {
+                        let history_start = std::time::Instant::now();
                         history
                             .lock()
                             .expect("history lock poisoned")
                             .push_translation(result.clone());
+                        log_elapsed("core_translation_worker_save_history", history_start);
                     }
                     log::info!(
                         "core translation completed request={} translated_chars={}",
@@ -312,6 +357,7 @@ impl CoreService {
                     CoreEvent::TranslationCompleted { result }
                 }
                 Err(error) => {
+                    log_elapsed("core_translation_worker_translate", translate_start);
                     log::error!(
                         "core translation failed code={} message={}",
                         error.code,
@@ -323,8 +369,13 @@ impl CoreService {
                     }
                 }
             };
+            let send_start = std::time::Instant::now();
             let _ = sender.send(event);
+            log_elapsed("core_translation_worker_send_event", send_start);
+            worker_span.finish();
         });
+        log_elapsed("core_translation_spawn_worker", spawn_start);
+        span.finish();
 
         events
     }
@@ -387,21 +438,27 @@ impl CoreService {
     }
 
     fn apply_default_ocr_model(&mut self, job: &mut OcrJob) {
+        let mut span = PerfSpan::new("core_apply_default_ocr_model_total")
+            .field("provider", ocr_provider_label(&job.provider));
         if !matches!(job.provider, OcrProvider::Local(_)) {
+            span.finish();
             return;
         }
 
         if job.model_id.is_none() {
+            let select_start = std::time::Instant::now();
             job.model_id = self
                 .settings
                 .ocr
                 .default_model_id
                 .clone()
                 .or_else(|| self.models.recommended_ocr().map(|model| model.id.clone()));
+            log_elapsed("core_select_default_ocr_model", select_start);
         }
 
         if let Some(model) = job.model_id.as_deref().and_then(|id| self.models.find(id)) {
             log::info!("core loading ocr model id={}", model.id);
+            let load_start = std::time::Instant::now();
             if let Err(error) = self.ocr_engine.load_model(model) {
                 log::error!(
                     "core failed to load ocr model id={} code={} message={}",
@@ -410,18 +467,26 @@ impl CoreService {
                     error.message
                 );
             }
+            log_elapsed("core_load_ocr_model", load_start);
+            span.add_field("model_id", &model.id);
         }
+        span.finish();
     }
 
     fn apply_default_translation_model(
         &mut self,
         request: &mut TranslationRequest,
     ) -> Result<(), TranslateEngineError> {
+        let mut span = PerfSpan::new("core_apply_default_translation_model_total")
+            .field("provider", translate_provider_label(&request.provider))
+            .field("target", &request.target_language.0);
         if !matches!(request.provider, TranslateProvider::Local(_)) {
+            span.finish();
             return Ok(());
         }
 
         if request.model_id.is_none() && matches!(request.provider, TranslateProvider::Local(_)) {
+            let select_start = std::time::Instant::now();
             request.model_id = self
                 .settings
                 .translate
@@ -438,6 +503,7 @@ impl CoreService {
                         )
                         .map(|model| model.id.clone())
                 });
+            log_elapsed("core_select_default_translation_model", select_start);
         }
 
         let Some(model) = request
@@ -460,7 +526,14 @@ impl CoreService {
         };
 
         log::info!("core loading translation model id={}", model.id);
-        self.translate_engine.load_model(model)
+        let load_start = std::time::Instant::now();
+        let result = self.translate_engine.load_model(model);
+        log_elapsed("core_load_translation_model", load_start);
+        span.add_field("model_id", &model.id);
+        if result.is_ok() {
+            span.finish();
+        }
+        result
     }
 }
 
@@ -501,6 +574,57 @@ fn command_name(command: &CoreCommand) -> &'static str {
         CoreCommand::ImportModel { .. } => "import_model",
         CoreCommand::UpdateSettings(_) => "update_settings",
         CoreCommand::DrainEvents => "drain_events",
+    }
+}
+
+fn ocr_provider_label(provider: &OcrProvider) -> &'static str {
+    match provider {
+        OcrProvider::Disabled => "disabled",
+        OcrProvider::System => "system",
+        OcrProvider::Local(shared_models::OcrLocalBackend::Mnn) => "local-mnn",
+        OcrProvider::Local(shared_models::OcrLocalBackend::OnnxRuntime) => "local-onnx",
+        OcrProvider::Local(shared_models::OcrLocalBackend::PaddleRuntime) => "local-paddle",
+        OcrProvider::Local(shared_models::OcrLocalBackend::Custom(_)) => "local-custom",
+        OcrProvider::ExternalApi(shared_models::OcrExternalProvider::OpenAi) => "api-openai",
+        OcrProvider::ExternalApi(shared_models::OcrExternalProvider::AzureVision) => "api-azure",
+        OcrProvider::ExternalApi(shared_models::OcrExternalProvider::GoogleVision) => "api-google",
+        OcrProvider::ExternalApi(shared_models::OcrExternalProvider::BaiduOcr) => "api-baidu",
+        OcrProvider::ExternalApi(shared_models::OcrExternalProvider::TencentOcr) => "api-tencent",
+        OcrProvider::ExternalApi(shared_models::OcrExternalProvider::Custom(_)) => "api-custom",
+    }
+}
+
+fn translate_provider_label(provider: &TranslateProvider) -> &'static str {
+    match provider {
+        TranslateProvider::Disabled => "disabled",
+        TranslateProvider::Local(shared_models::TranslateLocalBackend::CTranslate2) => "local-ct2",
+        TranslateProvider::Local(shared_models::TranslateLocalBackend::Custom(_)) => "local-custom",
+        TranslateProvider::ExternalApi(shared_models::TranslateExternalProvider::DeepL) => {
+            "api-deepl"
+        }
+        TranslateProvider::ExternalApi(shared_models::TranslateExternalProvider::Google) => {
+            "api-google"
+        }
+        TranslateProvider::ExternalApi(shared_models::TranslateExternalProvider::Azure) => {
+            "api-azure"
+        }
+        TranslateProvider::ExternalApi(shared_models::TranslateExternalProvider::OpenAi) => {
+            "api-openai"
+        }
+        TranslateProvider::ExternalApi(shared_models::TranslateExternalProvider::Baidu) => {
+            "api-baidu"
+        }
+        TranslateProvider::ExternalApi(shared_models::TranslateExternalProvider::Tencent) => {
+            "api-tencent"
+        }
+        TranslateProvider::ExternalApi(shared_models::TranslateExternalProvider::CustomHttp) => {
+            "api-custom"
+        }
+        TranslateProvider::ExternalApi(shared_models::TranslateExternalProvider::Custom(_)) => {
+            "api-custom"
+        }
+        TranslateProvider::Experimental(_) => "experimental",
+        TranslateProvider::Custom(_) => "custom",
     }
 }
 

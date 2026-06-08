@@ -9,4 +9,14 @@ pub trait TranslateEngine {
         &self,
         request: &TranslationRequest,
     ) -> Result<TranslationResult, TranslateEngineError>;
+
+    fn translate_batch(
+        &self,
+        requests: &[TranslationRequest],
+    ) -> Result<Vec<TranslationResult>, TranslateEngineError> {
+        requests
+            .iter()
+            .map(|request| self.translate(request))
+            .collect()
+    }
 }

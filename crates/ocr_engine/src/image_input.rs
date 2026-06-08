@@ -1,19 +1,48 @@
 use image::{DynamicImage, ImageBuffer, Rgba};
+use perf_trace::{PerfSpan, log_elapsed};
 use shared_models::{ImageData, ImageFormat};
 
 use crate::OcrEngineError;
 
 pub fn decode_image(image: &ImageData) -> Result<DynamicImage, OcrEngineError> {
+    let span = PerfSpan::new("ocr_decode_image_total")
+        .field("format", image_format_label(image.metadata.format))
+        .field("bytes", image.bytes.len())
+        .field("width", image.metadata.pixel_size.width.round().max(1.0))
+        .field("height", image.metadata.pixel_size.height.round().max(1.0));
     match image.metadata.format {
-        ImageFormat::Png => image::load_from_memory(&image.bytes)
-            .map_err(|error| OcrEngineError::new("ocr_image_decode_failed", error.to_string())),
-        ImageFormat::Rgba8 => rgba_image(image.bytes.clone(), image),
+        ImageFormat::Png => {
+            let decode_start = std::time::Instant::now();
+            let result = image::load_from_memory(&image.bytes)
+                .map_err(|error| OcrEngineError::new("ocr_image_decode_failed", error.to_string()));
+            log_elapsed("ocr_decode_png_memory", decode_start);
+            if result.is_ok() {
+                span.finish();
+            }
+            result
+        }
+        ImageFormat::Rgba8 => {
+            let clone_start = std::time::Instant::now();
+            let bytes = image.bytes.clone();
+            log_elapsed("ocr_decode_rgba_clone", clone_start);
+            let result = rgba_image(bytes, image);
+            if result.is_ok() {
+                span.finish();
+            }
+            result
+        }
         ImageFormat::Bgra8 => {
+            let convert_start = std::time::Instant::now();
             let mut rgba = image.bytes.clone();
             for pixel in rgba.chunks_exact_mut(4) {
                 pixel.swap(0, 2);
             }
-            rgba_image(rgba, image)
+            log_elapsed("ocr_decode_bgra_to_rgba", convert_start);
+            let result = rgba_image(rgba, image);
+            if result.is_ok() {
+                span.finish();
+            }
+            result
         }
     }
 }
@@ -45,6 +74,14 @@ fn rgba_image(bytes: Vec<u8>, image: &ImageData) -> Result<DynamicImage, OcrEngi
                 format!("image '{}' could not be converted to RGBA", image.id.0),
             )
         })
+}
+
+fn image_format_label(format: ImageFormat) -> &'static str {
+    match format {
+        ImageFormat::Png => "png",
+        ImageFormat::Rgba8 => "rgba8",
+        ImageFormat::Bgra8 => "bgra8",
+    }
 }
 
 #[cfg(test)]

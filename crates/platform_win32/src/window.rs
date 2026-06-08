@@ -1,5 +1,6 @@
 pub use platform_api::{CaptureWindowRegion, NativeWindowRef, WindowOps};
 use platform_api::{PlatformError, Rect};
+use shared_models::Point;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WindowHandle(pub isize);
@@ -58,6 +59,10 @@ pub fn try_park_window(
     platform::try_park_window(hwnd, bounds, always_on_top)
 }
 
+pub fn move_client_area_to(hwnd: isize, position: Point) -> Result<(), PlatformError> {
+    platform::move_client_area_to(hwnd, position)
+}
+
 pub fn set_always_on_top(hwnd: isize, enabled: bool) -> Result<(), PlatformError> {
     platform::set_always_on_top(hwnd, enabled)
 }
@@ -71,11 +76,12 @@ mod platform {
     use platform_api::PlatformError;
     use shared_models::{Point, Rect, Size};
     use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT as WinRect};
+    use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumChildWindows, EnumWindows, GWL_EXSTYLE, GetWindowLongW, GetWindowRect, HWND_NOTOPMOST,
-        HWND_TOPMOST, IsWindow, IsWindowVisible, LWA_ALPHA, SW_HIDE, SW_SHOWNA, SWP_FRAMECHANGED,
-        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetLayeredWindowAttributes, SetWindowLongW,
-        SetWindowPos, ShowWindow, WS_EX_LAYERED, WS_EX_TRANSPARENT,
+        EnumChildWindows, EnumWindows, GWL_EXSTYLE, GetClientRect, GetWindowLongW, GetWindowRect,
+        HWND_NOTOPMOST, HWND_TOPMOST, IsWindow, IsWindowVisible, LWA_ALPHA, SW_HIDE, SW_SHOWNA,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetLayeredWindowAttributes,
+        SetWindowLongW, SetWindowPos, ShowWindow, WS_EX_LAYERED, WS_EX_TRANSPARENT,
     };
 
     use super::CaptureWindowRegion;
@@ -216,6 +222,75 @@ mod platform {
         }
         unsafe {
             let _ = ShowWindow(hwnd, SW_SHOWNA);
+        }
+        Ok(())
+    }
+
+    pub fn move_client_area_to(hwnd: isize, position: Point) -> Result<(), PlatformError> {
+        let hwnd = validated_hwnd(hwnd)?;
+        let mut window_rect = WinRect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        let mut client_rect = WinRect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+
+        if unsafe { GetWindowRect(hwnd, &mut window_rect) } == 0 {
+            return Err(PlatformError::new(
+                "window_rect_failed",
+                "failed to read the native window bounds",
+            ));
+        }
+        if unsafe { GetClientRect(hwnd, &mut client_rect) } == 0 {
+            return Err(PlatformError::new(
+                "window_client_rect_failed",
+                "failed to read the native client bounds",
+            ));
+        }
+
+        let mut client_origin = windows_sys::Win32::Foundation::POINT {
+            x: client_rect.left,
+            y: client_rect.top,
+        };
+        if unsafe { ClientToScreen(hwnd, &mut client_origin) } == 0 {
+            return Err(PlatformError::new(
+                "window_client_origin_failed",
+                "failed to map the native client origin",
+            ));
+        }
+
+        let frame_offset_x = client_origin.x - window_rect.left;
+        let frame_offset_y = client_origin.y - window_rect.top;
+        let outer_x = position.x.round() as i32 - frame_offset_x;
+        let outer_y = position.y.round() as i32 - frame_offset_y;
+
+        log::info!(
+            "moving window client area hwnd={hwnd:?} client_x={} client_y={} outer_x={outer_x} outer_y={outer_y} frame_offset_x={frame_offset_x} frame_offset_y={frame_offset_y}",
+            position.x,
+            position.y
+        );
+        let positioned = unsafe {
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                outer_x,
+                outer_y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+        };
+        if positioned == 0 {
+            return Err(PlatformError::new(
+                "window_move_client_failed",
+                "failed to move the native client area",
+            ));
         }
         Ok(())
     }
@@ -520,6 +595,13 @@ mod platform {
         _hwnd: isize,
         _bounds: Rect,
         _always_on_top: bool,
+    ) -> Result<(), PlatformError> {
+        Err(unsupported_window_ops())
+    }
+
+    pub fn move_client_area_to(
+        _hwnd: isize,
+        _position: shared_models::Point,
     ) -> Result<(), PlatformError> {
         Err(unsupported_window_ops())
     }
