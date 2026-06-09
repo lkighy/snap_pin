@@ -35,8 +35,8 @@
         },
         "background": {
           "activeOnStart": true,
-          "beginsPattern": "vite .*",
-          "endsPattern": "Local: +http://127\\.0\\.0\\.1:1420/"
+          "beginsPattern": ".*",
+          "endsPattern": "Local:.*http://127\\.0\\.0\\.1:1420/"
         }
       }
     },
@@ -44,9 +44,7 @@
       "label": "ui: ensure dev",
       "type": "shell",
       "command": "node",
-      "args": [
-        "${workspaceFolder}/.vscode/scripts/ensure-ui-dev.cjs"
-      ],
+      "args": ["${workspaceFolder}/.vscode/scripts/ensure-ui-dev.cjs"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -65,14 +63,181 @@
       "options": {
         "cwd": "${workspaceFolder}"
       },
-      "group": "build",
       "problemMatcher": "$tsc"
     },
     {
-      "label": "tauri: dev",
+      "label": "rust: fmt",
       "type": "shell",
-      "command": "pwsh",
+      "command": "cargo",
+      "args": ["fmt", "--all"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "rust: check tauri (OCR + CT2)",
+      "type": "shell",
+      "command": "powershell",
       "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/check-translate-ct2-windows.ps1",
+        "-CargoCommand",
+        "check -p tauri_desktop --features local-ocr-rs,local-translate-ct2"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "rust: check overlay (OCR + CT2)",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/check-translate-ct2-windows.ps1",
+        "-CargoCommand",
+        "check -p egui_overlay --features local-ocr-rs,local-translate-ct2"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "rust: check app+overlay (OCR + CT2)",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/check-translate-ct2-windows.ps1",
+        "-CargoCommand",
+        "check -p tauri_desktop -p egui_overlay --features tauri_desktop/local-ocr-rs,tauri_desktop/local-translate-ct2,egui_overlay/local-ocr-rs,egui_overlay/local-translate-ct2"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "rust: build overlay (OCR + CT2)",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/check-translate-ct2-windows.ps1",
+        "-CargoCommand",
+        "build -p egui_overlay --features local-ocr-rs,local-translate-ct2"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "rust: build debug app+overlay (OCR + CT2)",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/check-translate-ct2-windows.ps1",
+        "-CargoCommand",
+        "build -p tauri_desktop -p egui_overlay --features tauri_desktop/local-ocr-rs,tauri_desktop/local-translate-ct2,egui_overlay/local-ocr-rs,egui_overlay/local-translate-ct2"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "rust: build release app+overlay (OCR + CT2)",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/check-translate-ct2-windows.ps1",
+        "-CargoCommand",
+        "build --release -p tauri_desktop -p egui_overlay --features tauri_desktop/local-ocr-rs,tauri_desktop/local-translate-ct2,egui_overlay/local-ocr-rs,egui_overlay/local-translate-ct2"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "dependsOn": ["ui: build"],
+      "dependsOrder": "sequence",
+      "problemMatcher": "$rustc"
+    },
+    {
+      "label": "dev: prepare app+overlay (OCR + CT2)",
+      "dependsOn": ["ui: ensure dev", "rust: build debug app+overlay (OCR + CT2)"],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
+    {
+      "label": "app: run dev (exe, OCR + CT2)",
+      "type": "shell",
+      "command": "${workspaceFolder}\\target\\debug\\tauri_desktop.exe",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "CARGO_ENCODED_RUSTFLAGS": "-Ctarget-feature=+crt-static",
+          "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}",
+          "SNAP_PIN_OVERLAY_BIN": "${workspaceFolder}\\target\\debug\\egui_overlay.exe",
+          "SNAP_PIN_OVERLAY_FEATURES": "local-ocr-rs,local-translate-ct2"
+        }
+      },
+      "dependsOn": ["dev: prepare app+overlay (OCR + CT2)"],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
+    {
+      "label": "app: run release (exe, OCR + CT2)",
+      "type": "shell",
+      "command": "${workspaceFolder}\\target\\release\\tauri_desktop.exe",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "CARGO_ENCODED_RUSTFLAGS": "-Ctarget-feature=+crt-static",
+          "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}",
+          "SNAP_PIN_OVERLAY_BIN": "${workspaceFolder}\\target\\release\\egui_overlay.exe",
+          "SNAP_PIN_OVERLAY_FEATURES": "local-ocr-rs,local-translate-ct2"
+        }
+      },
+      "dependsOn": ["rust: build release app+overlay (OCR + CT2)"],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
+    {
+      "label": "tauri: dev (cargo run, OCR + CT2)",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
         "scripts/check-translate-ct2-windows.ps1",
         "-CargoCommand",
         "run -p tauri_desktop --features local-ocr-rs,local-translate-ct2"
@@ -80,70 +245,41 @@
       "options": {
         "cwd": "${workspaceFolder}",
         "env": {
-          "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}"
+          "SNAP_PIN_OVERLAY_BIN": "${workspaceFolder}\\target\\debug\\egui_overlay.exe",
+          "SNAP_PIN_OVERLAY_FEATURES": "local-ocr-rs,local-translate-ct2"
         }
       },
-      "dependsOn": ["ui: ensure dev"],
+      "dependsOn": ["dev: prepare app+overlay (OCR + CT2)"],
+      "dependsOrder": "sequence",
       "problemMatcher": "$rustc"
     },
     {
-      "label": "tauri: release",
+      "label": "tauri: mvp cli (OCR + CT2)",
       "type": "shell",
-      "command": "pwsh",
+      "command": "powershell",
       "args": [
-        "scripts/check-translate-ct2-windows.ps1",
-        "-CargoCommand",
-        "run --release -p tauri_desktop --features local-ocr-rs,local-translate-ct2"
-      ],
-      "options": {
-        "cwd": "${workspaceFolder}",
-        "env": {
-          "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}"
-        }
-      },
-      "dependsOn": ["ui: build"],
-      "problemMatcher": "$rustc"
-    },
-    {
-      "label": "tauri: mvp cli",
-      "type": "shell",
-      "command": "pwsh",
-      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
         "scripts/check-translate-ct2-windows.ps1",
         "-CargoCommand",
         "run -p tauri_desktop --features local-ocr-rs,local-translate-ct2 -- --mvp-cli"
       ],
       "options": {
-        "cwd": "${workspaceFolder}",
-        "env": {
-          "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}"
-        }
+        "cwd": "${workspaceFolder}"
       },
       "problemMatcher": "$rustc"
     },
     {
-      "label": "rust: check tauri",
+      "label": "translate: check CT2 env",
       "type": "shell",
-      "command": "pwsh",
+      "command": "powershell",
       "args": [
-        "scripts/check-translate-ct2-windows.ps1",
-        "-CargoCommand",
-        "check -p tauri_desktop --features local-ocr-rs,local-translate-ct2"
-      ],
-      "options": {
-        "cwd": "${workspaceFolder}",
-        "env": {
-          "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}"
-        }
-      },
-      "group": "build",
-      "problemMatcher": "$rustc"
-    },
-    {
-      "label": "translate: check ct2 env",
-      "type": "shell",
-      "command": "pwsh",
-      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
         "scripts/check-translate-ct2-windows.ps1",
         "-CargoCommand",
         "check -p translate_engine --features local-translate-ct2"
@@ -151,8 +287,29 @@
       "options": {
         "cwd": "${workspaceFolder}"
       },
-      "group": "build",
       "problemMatcher": "$rustc"
+    },
+    {
+      "label": "app: stop debug processes",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        ".vscode/scripts/stop-debug-processes.ps1"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "app: restart dev (stop + exe, OCR + CT2)",
+      "dependsOn": ["app: stop debug processes", "app: run dev (exe, OCR + CT2)"],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
     }
   ]
 }

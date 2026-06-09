@@ -2,53 +2,47 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Tauri Desktop",
+      "name": "Debug Desktop (OCR + CT2)",
       "type": "lldb",
       "request": "launch",
-      "cargo": {
-        "args": [
-          "build",
-          "-p",
-          "tauri_desktop",
-          "--features",
-          "local-ocr-rs,local-translate-ct2"
-        ],
-        "filter": {
-          "name": "tauri_desktop",
-          "kind": "bin"
-        }
-      },
+      "program": "${workspaceFolder}/target/debug/tauri_desktop.exe",
       "args": [],
       "cwd": "${workspaceFolder}",
       "env": {
         "CARGO_ENCODED_RUSTFLAGS": "-Ctarget-feature=+crt-static",
-        "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}"
+        "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}",
+        "SNAP_PIN_OVERLAY_BIN": "${workspaceFolder}\\target\\debug\\egui_overlay.exe",
+        "SNAP_PIN_OVERLAY_FEATURES": "local-ocr-rs,local-translate-ct2"
       },
-      "preLaunchTask": "ui: ensure dev"
+      "preLaunchTask": "dev: prepare app+overlay (OCR + CT2)"
     },
     {
-      "name": "Tauri Desktop MVP CLI",
+      "name": "Debug Desktop MVP CLI (OCR + CT2)",
       "type": "lldb",
       "request": "launch",
-      "cargo": {
-        "args": [
-          "build",
-          "-p",
-          "tauri_desktop",
-          "--features",
-          "local-ocr-rs,local-translate-ct2"
-        ],
-        "filter": {
-          "name": "tauri_desktop",
-          "kind": "bin"
-        }
-      },
+      "program": "${workspaceFolder}/target/debug/tauri_desktop.exe",
       "args": ["--mvp-cli"],
       "cwd": "${workspaceFolder}",
       "env": {
         "CARGO_ENCODED_RUSTFLAGS": "-Ctarget-feature=+crt-static",
+        "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}",
+        "SNAP_PIN_OVERLAY_BIN": "${workspaceFolder}\\target\\debug\\egui_overlay.exe",
+        "SNAP_PIN_OVERLAY_FEATURES": "local-ocr-rs,local-translate-ct2"
+      },
+      "preLaunchTask": "rust: build debug app+overlay (OCR + CT2)"
+    },
+    {
+      "name": "Debug Overlay Resident (OCR + CT2)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/egui_overlay.exe",
+      "args": ["--capture", "--resident"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "CARGO_ENCODED_RUSTFLAGS": "-Ctarget-feature=+crt-static",
         "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}"
-      }
+      },
+      "preLaunchTask": "rust: build overlay (OCR + CT2)"
     }
   ]
 }

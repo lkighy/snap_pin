@@ -1,0 +1,10 @@
+{
+  "rust-analyzer.cargo.features": "all",
+  "rust-analyzer.check.command": "check",
+  "rust-analyzer.check.features": "all",
+  "terminal.integrated.env.windows": {
+    "CARGO_ENCODED_RUSTFLAGS": "-Ctarget-feature=+crt-static",
+    "PATH": "${workspaceFolder}\\third_party\\ocr-rs-2.2.2\\3rd_party\\prebuilt\\mnn-dev-windows-x86_64\\lib;${env:PATH}",
+    "SNAP_PIN_OVERLAY_FEATURES": "local-ocr-rs,local-translate-ct2"
+  }
+}

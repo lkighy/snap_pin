@@ -192,9 +192,15 @@ impl CaptureOverlayApp {
         self.shift_down_last_frame = shift_down;
     }
 
-    fn handle_shortcuts(&mut self, ctx: &Context) {
+    fn handle_shortcuts(&mut self, ctx: &Context, canvas: EguiRect) {
         if ctx.input(|input| input.key_pressed(Key::Escape)) {
             self.dismiss(ctx);
+            return;
+        }
+
+        if ctx.input(|input| command_shortcut_pressed(input, Key::A)) {
+            self.select_full_screen(canvas);
+            ctx.request_repaint();
             return;
         }
 
@@ -221,6 +227,22 @@ impl CaptureOverlayApp {
         if ctx.input(|input| input.key_pressed(Key::P)) {
             self.run_capture_action(ctx, CaptureAction::Pin);
         }
+    }
+
+    fn select_full_screen(&mut self, canvas: EguiRect) {
+        if !matches!(self.status, CaptureStatus::Selecting)
+            || self.selection.is_some()
+            || self.drag_state.is_some()
+        {
+            return;
+        }
+
+        self.hovered_region = None;
+        self.selection = Some(canvas);
+        log::info!(
+            "capture full screen selected by shortcut selection={:?}",
+            self.selection
+        );
     }
 
     fn handle_color_shortcuts(&mut self, ctx: &Context, canvas: EguiRect) {
@@ -870,13 +892,13 @@ impl App for CaptureOverlayApp {
             return;
         }
 
-        self.handle_shortcuts(ctx);
         self.update_color_format_toggle(ctx);
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 let canvas = ui.max_rect();
+                self.handle_shortcuts(ctx, canvas);
                 let response = ui.interact(canvas, Id::new("capture-canvas"), Sense::drag());
                 if response.double_clicked() {
                     self.finish_selection(ctx);
