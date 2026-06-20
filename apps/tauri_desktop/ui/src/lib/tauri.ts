@@ -18,6 +18,7 @@ export type CapabilityStatusKey =
 
 export interface CapabilityStatus {
   status: CapabilityStatusKey;
+  reasonCode?: string;
   reason?: string;
   action?: string;
 }

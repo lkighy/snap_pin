@@ -3,13 +3,17 @@ use shared_models::{Point, Rect};
 use crate::PlatformError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NativeWindowRef {
-    pub raw: isize,
+pub struct PlatformWindowRef {
+    raw_handle: isize,
 }
 
-impl NativeWindowRef {
-    pub fn from_raw(raw: isize) -> Self {
-        Self { raw }
+impl PlatformWindowRef {
+    pub fn from_raw_handle(raw_handle: isize) -> Self {
+        Self { raw_handle }
+    }
+
+    pub fn raw_handle(self) -> isize {
+        self.raw_handle
     }
 }
 
@@ -27,29 +31,29 @@ pub trait WindowOps: Send + Sync {
 
     fn set_always_on_top(
         &self,
-        window: NativeWindowRef,
+        window: PlatformWindowRef,
         enabled: bool,
     ) -> Result<(), PlatformError>;
 
     fn set_click_through(
         &self,
-        window: NativeWindowRef,
+        window: PlatformWindowRef,
         enabled: bool,
     ) -> Result<(), PlatformError>;
 
-    fn park_window(&self, window: NativeWindowRef, bounds: Rect) -> Result<(), PlatformError>;
+    fn park_window(&self, window: PlatformWindowRef, bounds: Rect) -> Result<(), PlatformError>;
 
     fn move_client_area_to(
         &self,
-        window: NativeWindowRef,
+        window: PlatformWindowRef,
         position: Point,
     ) -> Result<(), PlatformError>;
 
-    fn suspend_for_modal(&self, window: NativeWindowRef) -> Result<(), PlatformError>;
+    fn suspend_for_modal(&self, window: PlatformWindowRef) -> Result<(), PlatformError>;
 
     fn restore_after_modal(
         &self,
-        window: NativeWindowRef,
+        window: PlatformWindowRef,
         always_on_top: bool,
     ) -> Result<(), PlatformError>;
 }

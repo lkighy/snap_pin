@@ -2,34 +2,11 @@
 pub enum TranslateProvider {
     Disabled,
     Local(TranslateLocalBackend),
-    ExternalApi(TranslateExternalProvider),
-    Experimental(TranslateExperimentalBackend),
-    Custom(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TranslateLocalBackend {
     CTranslate2,
-    Custom(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TranslateExternalProvider {
-    DeepL,
-    Google,
-    Azure,
-    OpenAi,
-    Baidu,
-    Tencent,
-    CustomHttp,
-    Custom(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TranslateExperimentalBackend {
-    RustBert,
-    Candle,
-    Custom(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

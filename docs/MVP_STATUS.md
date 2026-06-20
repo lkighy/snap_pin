@@ -12,23 +12,22 @@ cargo run -p tauri_desktop
 
 默认会启动 Tauri 窗口，包含状态、OCR/翻译设置占位、模型信息和事件输出。
 
-如果只想运行无 GUI 的核心链路演示：
+如果只想运行无 GUI 的 0.1 发布验收流：
 
 ```powershell
 cargo run -p tauri_desktop -- --mvp-cli
 ```
 
-运行后会执行一条完整的模拟流程：
+运行后会执行一条专用于验收的 mock 成功流程：
 
 ```text
 StartCapture
 CompleteCapture
-RunOcrAndTranslate
 OcrQueued
 OcrCompleted
 TranslationQueued
 TranslationCompleted
-History updated
+history: 1 ocr result(s), 1 translation(s)
 ```
 
 这个流程已经打通：
@@ -37,9 +36,11 @@ History updated
 - 模型清单默认项。
 - OCR provider 抽象。
 - 翻译 provider 抽象。
-- OCR 结果写入历史。
-- 翻译结果写入历史。
+- MVP mock OCR 结果写入历史。
+- MVP mock 翻译结果写入历史。
 - overlay 消费 OCR/翻译事件并更新 TextOverlay。
+
+注意：`--mvp-cli` 不代表默认 GUI/provider 路径会自动回退 mock。默认构建下，真实本地 OCR/翻译 runtime 未启用时仍应分别显示 `local_ocr_runtime_disabled` / `local_translate_runtime_disabled`。
 
 ## 当前 crate
 
@@ -47,9 +48,11 @@ History updated
 - `apps/egui_overlay`：overlay 状态、选区、pin、文本层，当前尚未接真实 egui/wgpu 窗口。
 - `crates/core_service`：截图、OCR、翻译、历史、设置和模型清单调度。
 - `crates/model_registry`：默认 OCR/翻译模型清单和推荐模型选择。
-- `crates/ocr_engine`：OCR trait 和 mock MNN engine。
-- `crates/translate_engine`：翻译 trait 和 mock CTranslate2 engine。
-- `crates/platform_win32`：当前 Windows 截图、窗口、热键、剪贴板、文件对话框、共享内存和系统 OCR 实现边界。后续会迁到 `platform_api` / `platform_runtime` 能力架构后面。
+- `crates/ocr_engine`：OCR trait、本地 MNN/外部 API/provider 路由；默认构建未启用 native OCR runtime 时返回明确 disabled 状态。
+- `crates/translate_engine`：翻译 trait、本地 CTranslate2/provider 路由；默认构建未启用 native 翻译 runtime 时返回明确 disabled 状态。
+- `crates/platform_api`：平台能力 trait、能力状态和平台错误。
+- `crates/platform_runtime`：按 `target_os` 组装当前平台实现。
+- `crates/platform_win32`：当前 Windows 截图、窗口、热键、剪贴板、文件对话框、共享内存和系统 OCR 实现边界。
 - `crates/ipc`：IPC envelope 和内存 bus。
 - `crates/shared_models`：跨层共享模型。
 
@@ -58,7 +61,7 @@ History updated
 当前以下内容是 mock 或接口占位：
 
 - 截图：未接 WGC/DXGI，使用模拟图像。
-- OCR：未接 `ocr-rs` / `rust-paddle-ocr`，使用 `MockOcrEngine`。
+- OCR：默认 GUI/provider 路径未接 `ocr-rs` / `rust-paddle-ocr` native runtime，会返回 `local_ocr_runtime_disabled`；`--mvp-cli` 只在发布验收 helper 内构造 mock OCR 成功结果。
 - 翻译：本地 CTranslate2 模型包导入、校验、路由和异步事件流已接入；pin 贴图窗口的翻译按钮已能对 OCR 文本发起本地翻译并渲染 Translation overlay；默认构建未接 `ct2rs` native runtime，会返回 `local_translate_runtime_disabled`，不再用 mock 冒充真实本地翻译。
 - Tauri：已接初始窗口、托盘和 commands；设置页可以读取和保存当前进程内 Settings，尚未持久化到磁盘。
 - 设置页面：已覆盖截图、贴图、OCR、翻译、快捷键、历史和模型入口。截图设置包含光标、冻结画面、放大镜、遮罩透明度、边框颜色、延迟和截图后动作。

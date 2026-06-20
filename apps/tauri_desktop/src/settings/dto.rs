@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use shared_models::{
     CaptureCompletionAction, OcrExternalProvider, OcrLocalBackend, OcrProvider, OcrProviderProfile,
-    OcrRunMode, Settings, TranslateExternalProvider, TranslateLocalBackend, TranslateProvider,
+    OcrRunMode, Settings, TranslateLocalBackend, TranslateProvider,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -564,76 +564,40 @@ fn ocr_provider_name(provider: &OcrProvider) -> String {
         OcrProvider::Disabled => "disabled",
         OcrProvider::System => "system",
         OcrProvider::Local(OcrLocalBackend::Mnn) => "local-mnn",
-        OcrProvider::Local(OcrLocalBackend::OnnxRuntime) => "local-onnx",
-        OcrProvider::Local(OcrLocalBackend::PaddleRuntime) => "local-paddle",
-        OcrProvider::Local(OcrLocalBackend::Custom(_)) => "local-custom",
-        OcrProvider::ExternalApi(OcrExternalProvider::OpenAi) => "api-openai",
-        OcrProvider::ExternalApi(OcrExternalProvider::AzureVision) => "api-azure",
-        OcrProvider::ExternalApi(OcrExternalProvider::GoogleVision) => "api-google",
-        OcrProvider::ExternalApi(OcrExternalProvider::BaiduOcr) => "api-baidu",
-        OcrProvider::ExternalApi(OcrExternalProvider::TencentOcr) => "api-tencent",
-        OcrProvider::ExternalApi(OcrExternalProvider::Custom(_)) => "api-custom",
+        OcrProvider::ExternalApi(OcrExternalProvider::CustomHttp) => "api-custom",
     }
     .to_owned()
 }
 
 fn ocr_mode_name(mode: &OcrRunMode) -> String {
     match mode {
-        OcrRunMode::Lightweight => "lightweight",
         OcrRunMode::Standard => "standard",
-        OcrRunMode::Compatible => "compatible",
-        OcrRunMode::Advanced => "advanced",
-        OcrRunMode::Cloud => "cloud",
     }
     .to_owned()
 }
 
 fn parse_ocr_mode(value: &str) -> OcrRunMode {
-    match value {
-        "lightweight" => OcrRunMode::Lightweight,
-        "compatible" => OcrRunMode::Compatible,
-        "advanced" => OcrRunMode::Advanced,
-        "cloud" => OcrRunMode::Cloud,
-        _ => OcrRunMode::Standard,
-    }
+    let _ = value;
+    OcrRunMode::Standard
 }
 
 fn ocr_external_provider_name(provider: &OcrExternalProvider) -> String {
     match provider {
-        OcrExternalProvider::OpenAi => "api-openai",
-        OcrExternalProvider::AzureVision => "api-azure",
-        OcrExternalProvider::GoogleVision => "api-google",
-        OcrExternalProvider::BaiduOcr => "api-baidu",
-        OcrExternalProvider::TencentOcr => "api-tencent",
-        OcrExternalProvider::Custom(_) => "api-custom",
+        OcrExternalProvider::CustomHttp => "api-custom",
     }
     .to_owned()
 }
 
 fn parse_ocr_external_provider(value: &str) -> OcrExternalProvider {
-    match value {
-        "api-openai" => OcrExternalProvider::OpenAi,
-        "api-azure" => OcrExternalProvider::AzureVision,
-        "api-google" => OcrExternalProvider::GoogleVision,
-        "api-baidu" => OcrExternalProvider::BaiduOcr,
-        "api-tencent" => OcrExternalProvider::TencentOcr,
-        "api-custom" => OcrExternalProvider::Custom("custom".to_owned()),
-        _ => OcrExternalProvider::Custom("custom".to_owned()),
-    }
+    let _ = value;
+    OcrExternalProvider::CustomHttp
 }
 
 fn parse_ocr_provider(value: &str) -> OcrProvider {
     match value {
         "disabled" => OcrProvider::Disabled,
         "system" => OcrProvider::System,
-        "local-onnx" => OcrProvider::Local(OcrLocalBackend::OnnxRuntime),
-        "local-paddle" => OcrProvider::Local(OcrLocalBackend::PaddleRuntime),
-        "api-openai" => OcrProvider::ExternalApi(OcrExternalProvider::OpenAi),
-        "api-azure" => OcrProvider::ExternalApi(OcrExternalProvider::AzureVision),
-        "api-google" => OcrProvider::ExternalApi(OcrExternalProvider::GoogleVision),
-        "api-baidu" => OcrProvider::ExternalApi(OcrExternalProvider::BaiduOcr),
-        "api-tencent" => OcrProvider::ExternalApi(OcrExternalProvider::TencentOcr),
-        "api-custom" => OcrProvider::ExternalApi(OcrExternalProvider::Custom("custom".to_owned())),
+        "api-custom" => OcrProvider::ExternalApi(OcrExternalProvider::CustomHttp),
         _ => OcrProvider::Local(OcrLocalBackend::Mnn),
     }
 }
@@ -642,17 +606,6 @@ fn translate_provider_name(provider: &TranslateProvider) -> String {
     match provider {
         TranslateProvider::Disabled => "disabled",
         TranslateProvider::Local(TranslateLocalBackend::CTranslate2) => "local-ct2",
-        TranslateProvider::Local(TranslateLocalBackend::Custom(_)) => "local-custom",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::DeepL) => "api-deepl",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::Google) => "api-google",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::Azure) => "api-azure",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::OpenAi) => "api-openai",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::Baidu) => "api-baidu",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::Tencent) => "api-tencent",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::CustomHttp) => "api-custom",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::Custom(_)) => "api-custom",
-        TranslateProvider::Experimental(_) => "experimental",
-        TranslateProvider::Custom(_) => "custom",
     }
     .to_owned()
 }
@@ -660,19 +613,6 @@ fn translate_provider_name(provider: &TranslateProvider) -> String {
 fn parse_translate_provider(value: &str) -> TranslateProvider {
     match value {
         "disabled" => TranslateProvider::Disabled,
-        "api-deepl" => TranslateProvider::ExternalApi(TranslateExternalProvider::DeepL),
-        "api-google" => TranslateProvider::ExternalApi(TranslateExternalProvider::Google),
-        "api-azure" => TranslateProvider::ExternalApi(TranslateExternalProvider::Azure),
-        "api-openai" => TranslateProvider::ExternalApi(TranslateExternalProvider::OpenAi),
-        "api-baidu" => TranslateProvider::ExternalApi(TranslateExternalProvider::Baidu),
-        "api-tencent" => TranslateProvider::ExternalApi(TranslateExternalProvider::Tencent),
-        "api-custom" => TranslateProvider::ExternalApi(TranslateExternalProvider::CustomHttp),
-        "experimental-rust-bert" => {
-            TranslateProvider::Experimental(shared_models::TranslateExperimentalBackend::RustBert)
-        }
-        "experimental-candle" => {
-            TranslateProvider::Experimental(shared_models::TranslateExperimentalBackend::Candle)
-        }
         _ => TranslateProvider::Local(TranslateLocalBackend::CTranslate2),
     }
 }

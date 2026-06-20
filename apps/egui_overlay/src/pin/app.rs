@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
@@ -11,7 +12,7 @@ use eframe::egui::{
 use eframe::{App, CreationContext, Frame};
 use image::DynamicImage;
 use perf_trace::{PerfSpan, log_elapsed};
-use platform_api::NativeWindowRef;
+use platform_api::{AppPlatform, PlatformWindowRef};
 use raw_window_handle::HasWindowHandle;
 use shared_models::{
     OcrProvider, OcrResult, OcrTextBlock, Point, Rect, Size, TextOverlay, TranslateProvider,
@@ -20,7 +21,7 @@ use shared_models::{
 use crate::capture::hotkeys::{command_shift_shortcut_pressed, copy_shortcut_pressed};
 use crate::capture::paint::{draw_error, draw_pin_border};
 use crate::capture::snapshot_io::capture_file_name;
-use crate::capture::window::hwnd_from_raw_window_handle;
+use crate::capture::window::platform_window_ref_from_raw_window_handle;
 use crate::pin::ocr::{PinOcrRequest, parse_ocr_provider, recognize_pin_image};
 use crate::pin::text_overlay::{
     OcrTextOverlayStyle, draw_text_overlay, ocr_block_interaction_rect,
@@ -42,6 +43,7 @@ use crate::runtime::fonts::install_system_fonts;
 use crate::runtime::text::OverlayText;
 pub(crate) struct PinWindowApp {
     text: OverlayText,
+    platform: Arc<dyn AppPlatform>,
     image_path: Option<PathBuf>,
     image_tiles: Vec<PinImageTile>,
     image_size: Vec2,
@@ -71,7 +73,7 @@ pub(crate) struct PinWindowApp {
     block_translations: Vec<PinBlockTranslation>,
     translate_after_ocr: bool,
     ocr_text_style: OcrTextOverlayStyle,
-    window_hwnd: Option<isize>,
+    window_ref: Option<PlatformWindowRef>,
     initial_client_position: Point,
     client_position_sync_frames: u8,
 }
@@ -140,18 +142,23 @@ fn build_pin_image_tiles(ctx: &Context, image: &image::RgbaImage) -> Vec<PinImag
 }
 
 impl PinWindowApp {
-    pub(crate) fn new(creation_context: &CreationContext<'_>, args: CliArgs) -> Self {
+    pub(crate) fn new(
+        creation_context: &CreationContext<'_>,
+        args: CliArgs,
+        platform: Arc<dyn AppPlatform>,
+    ) -> Self {
         install_system_fonts(&creation_context.egui_ctx);
         let text = OverlayText::new(args.language);
         let startup_action = PinStartupAction::from_name(&args.pin_startup_action);
         let initial_image_size = Vec2::new(args.width, args.height);
         let sizing = PinWindowSizing::new(args.pin_min_width, args.pin_min_height);
-        let window_hwnd = creation_context
+        let window_ref = creation_context
             .window_handle()
             .ok()
-            .and_then(|handle| hwnd_from_raw_window_handle(handle.as_raw()));
+            .and_then(|handle| platform_window_ref_from_raw_window_handle(handle.as_raw()));
         let mut app = Self {
             text,
+            platform,
             image_path: args.image,
             image_tiles: Vec::new(),
             image_size: initial_image_size,
@@ -198,7 +205,7 @@ impl PinWindowApp {
                 args.ocr_text_interaction_padding_x,
                 args.ocr_text_interaction_padding_y,
             ),
-            window_hwnd,
+            window_ref,
             initial_client_position: Point::new(args.x, args.y),
             client_position_sync_frames: 3,
         };
@@ -232,16 +239,15 @@ impl PinWindowApp {
             return;
         }
         self.client_position_sync_frames -= 1;
-        let Some(hwnd) = self.window_hwnd else {
+        let Some(window) = self.window_ref else {
             return;
         };
 
-        match platform_runtime::create_platform()
+        match self
+            .platform
             .window_ops()
-            .move_client_area_to(
-                NativeWindowRef::from_raw(hwnd),
-                self.initial_client_position,
-            ) {
+            .move_client_area_to(window, self.initial_client_position)
+        {
             Ok(()) => {
                 log::info!(
                     "pin window client area aligned x={} y={} remaining_sync_frames={}",
@@ -682,6 +688,7 @@ impl PinWindowApp {
         self.ocr_started_at = Some(Instant::now());
 
         let request = PinOcrRequest {
+            platform: self.platform.clone(),
             path,
             provider: self.ocr_provider.clone(),
             language_hint: self.ocr_language_hint.clone(),
@@ -1013,10 +1020,7 @@ impl PinWindowApp {
         };
 
         let default_name = capture_file_name();
-        let image_path = match platform_runtime::create_platform()
-            .file_dialog()
-            .save_png_path(&default_name)
-        {
+        let image_path = match self.platform.file_dialog().save_png_path(&default_name) {
             Ok(Some(path)) => path,
             Ok(None) => {
                 log::info!("pin save path prompt canceled");

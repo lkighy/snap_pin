@@ -3,8 +3,7 @@ use std::path::PathBuf;
 use model_registry::ModelRegistry;
 use perf_trace::{PerfSpan, log_elapsed};
 use shared_models::{
-    LanguageCode, ModelManifest, Rect, TranslateExternalProvider, TranslateLocalBackend,
-    TranslateProvider, TranslationRequest,
+    LanguageCode, ModelManifest, Rect, TranslateLocalBackend, TranslateProvider, TranslationRequest,
 };
 use translate_engine::{RoutedTranslateEngine, TranslateEngine};
 
@@ -135,13 +134,6 @@ pub(crate) fn translate_pin_blocks(
 pub(crate) fn parse_translate_provider(value: &str) -> TranslateProvider {
     match value {
         "disabled" => TranslateProvider::Disabled,
-        "api-deepl" => TranslateProvider::ExternalApi(TranslateExternalProvider::DeepL),
-        "api-google" => TranslateProvider::ExternalApi(TranslateExternalProvider::Google),
-        "api-azure" => TranslateProvider::ExternalApi(TranslateExternalProvider::Azure),
-        "api-openai" => TranslateProvider::ExternalApi(TranslateExternalProvider::OpenAi),
-        "api-baidu" => TranslateProvider::ExternalApi(TranslateExternalProvider::Baidu),
-        "api-tencent" => TranslateProvider::ExternalApi(TranslateExternalProvider::Tencent),
-        "api-custom" => TranslateProvider::ExternalApi(TranslateExternalProvider::CustomHttp),
         _ => TranslateProvider::Local(TranslateLocalBackend::CTranslate2),
     }
 }
@@ -200,16 +192,5 @@ fn translate_provider_label(provider: &TranslateProvider) -> &'static str {
     match provider {
         TranslateProvider::Disabled => "disabled",
         TranslateProvider::Local(TranslateLocalBackend::CTranslate2) => "local-ct2",
-        TranslateProvider::Local(TranslateLocalBackend::Custom(_)) => "local-custom",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::DeepL) => "api-deepl",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::Google) => "api-google",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::Azure) => "api-azure",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::OpenAi) => "api-openai",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::Baidu) => "api-baidu",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::Tencent) => "api-tencent",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::CustomHttp) => "api-custom",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::Custom(_)) => "api-custom",
-        TranslateProvider::Experimental(_) => "experimental",
-        TranslateProvider::Custom(_) => "custom",
     }
 }

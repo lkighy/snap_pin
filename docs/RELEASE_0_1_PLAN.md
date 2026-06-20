@@ -26,7 +26,7 @@
 - 平台运行时：新增 `platform_runtime`，按当前 `target_os` 组装 `AppPlatform`。
 - Windows 实现：让 `platform_win32` 作为 `platform_api` 的 Windows 实现存在，而不是上层直接依赖的通用平台层。
 - 非 Windows 准备：macOS/Linux 暂不要求真实能力实现，但必须能用明确 `Unavailable`、`NeedsSetup` 或 `PermissionDenied` 表达能力状态。
-- 非 GUI MVP：`cargo run -p tauri_desktop -- --mvp-cli` 可跑通核心模拟流程。
+- 非 GUI MVP：`cargo run -p tauri_desktop -- --mvp-cli` 可输出完整 mock MVP 事件流。
 - 设置页：截图、贴图、OCR、翻译、快捷键、历史和模型入口可见，并能读写当前进程内设置。
 - 截图链路：保留当前模拟截图和 overlay/pin 边界，真实 WGC/DXGI 接入排在平台抽象落地之后。
 - Pin 文本层：OCR/翻译事件能更新 TextOverlay，pin 窗口侧的 OCR/翻译操作路径保持可演示。
@@ -59,7 +59,7 @@
 - 完成 `platform_runtime` crate，Windows 返回真实 `platform_win32` adapter，非 Windows 返回明确 stub 能力状态。
 - `ocr_engine` 不再直接依赖 `platform_win32`；系统 OCR 从模型 OCR engine 中拆出，作为平台能力调度。
 - app 业务模块不再散落直接调用 `platform_win32::...`；只允许启动和接线边界接触 `platform_runtime` 或 Windows adapter。
-- 确认 `cargo run -p tauri_desktop -- --mvp-cli` 可完成事件流演示。
+- 确认 `cargo run -p tauri_desktop -- --mvp-cli` 可输出完整 mock MVP 事件流。
 - 确认 `cargo run -p tauri_desktop` 可启动桌面壳，主窗口和托盘入口无启动崩溃。
 - 确认默认构建下 OCR/翻译 runtime 缺失时展示明确错误，而不是返回 mock 成功结果。
 - 确认设置页保存不会把 API key、模型绝对路径或其他敏感信息写入普通日志。
@@ -78,13 +78,13 @@ rg "platform_win32" apps crates/ocr_engine crates/core_service
 rg "HWND|Win32|DXGI|WGC|windows::|windows_sys" apps crates/core_service crates/ocr_engine crates/translate_engine
 ```
 
-- 运行 `cargo run -p tauri_desktop -- --mvp-cli` 并把事件流结果记录到发布说明。
+- 运行 `cargo run -p tauri_desktop -- --mvp-cli` 并把 mock 事件流结果记录到发布说明。
 - 在 Windows 上手动打开设置页，检查 OCR/翻译状态文案和禁用态。
 - 检查 pin 图 OCR 后复制行为是否与 [PIN_OCR_TODO.md](PIN_OCR_TODO.md) 当前基线一致。
 
 ### P2：发布说明
 
-- 写一份 `0.1.0` 发布说明，标记为平台抽象优先的 Windows 可运行技术预览。
+- 写一份 [0.1.0 发布说明](releases/0.1.0.md)，标记为平台抽象优先的 Windows 可运行技术预览。
 - 在发布说明里说明 macOS/Linux 当前是能力边界准备，不承诺真实可用功能。
 - 在发布说明里列出默认构建限制：真实 OCR/翻译 native runtime 默认关闭。
 - 在发布说明里列出可选验证命令：
@@ -107,13 +107,13 @@ pwsh scripts/check-translate-ct2-windows.ps1
 - [ ] `platform_win32` 只作为 Windows 实现或迁移包装被使用。
 - [ ] `ocr_engine` 不再依赖 `platform_win32`。
 - [ ] app 业务模块不再直接散落调用 `platform_win32::...`。
-- [ ] `cargo run -p tauri_desktop -- --mvp-cli` 输出完整 MVP 事件流。
+- [ ] `cargo run -p tauri_desktop -- --mvp-cli` 输出完整 mock MVP 事件流。
 - [ ] `cargo run -p tauri_desktop` 能启动主程序。
 - [ ] 设置页能打开并显示截图、贴图、OCR、翻译、快捷键、历史和模型相关配置。
 - [ ] 未启用 `local-ocr-rs` 时，本地 OCR 显示 `local_ocr_runtime_disabled` 或等价明确错误。
 - [ ] 未启用 `local-translate-ct2` 时，本地翻译显示 `local_translate_runtime_disabled` 或等价明确错误。
 - [ ] README 的运行说明与实际命令一致。
-- [ ] 发布说明列明 0.1 的非目标和已知限制。
+- [ ] [0.1.0 发布说明](releases/0.1.0.md)列明 0.1 的非目标和已知限制。
 
 ## 推荐发布命令
 

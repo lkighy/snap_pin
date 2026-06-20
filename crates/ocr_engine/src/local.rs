@@ -85,8 +85,5 @@ fn validate_backend_matches_provider(
 fn local_backend_name(backend: &OcrLocalBackend) -> &str {
     match backend {
         OcrLocalBackend::Mnn => "mnn",
-        OcrLocalBackend::OnnxRuntime => "onnxruntime",
-        OcrLocalBackend::PaddleRuntime => "paddle",
-        OcrLocalBackend::Custom(value) => value.as_str(),
     }
 }

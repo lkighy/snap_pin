@@ -35,14 +35,7 @@ impl ExternalOcrClient for HttpOcrClient {
         validate_profile(profile, &self.provider)?;
 
         match &self.provider {
-            OcrExternalProvider::Custom(_) => recognize_custom_http(profile, job, image),
-            provider => Err(OcrEngineError::new(
-                "external_ocr_provider_unimplemented",
-                format!(
-                    "external OCR provider '{}' needs a dedicated API adapter before it can run",
-                    external_provider_name(provider)
-                ),
-            )),
+            OcrExternalProvider::CustomHttp => recognize_custom_http(profile, job, image),
         }
     }
 }
@@ -201,17 +194,6 @@ fn image_format_name(format: ImageFormat) -> &'static str {
     }
 }
 
-fn external_provider_name(provider: &OcrExternalProvider) -> &str {
-    match provider {
-        OcrExternalProvider::OpenAi => "openai",
-        OcrExternalProvider::AzureVision => "azure-vision",
-        OcrExternalProvider::GoogleVision => "google-vision",
-        OcrExternalProvider::BaiduOcr => "baidu-ocr",
-        OcrExternalProvider::TencentOcr => "tencent-ocr",
-        OcrExternalProvider::Custom(_) => "custom-http",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use shared_models::{OcrExternalProvider, OcrProviderProfile};
@@ -222,7 +204,7 @@ mod tests {
     fn requires_privacy_notice_for_external_profile() {
         let profile = OcrProviderProfile {
             id: "custom".to_owned(),
-            provider: OcrExternalProvider::Custom("custom".to_owned()),
+            provider: OcrExternalProvider::CustomHttp,
             endpoint: Some("http://127.0.0.1:9999/ocr".to_owned()),
             model: None,
             language_hint: None,
@@ -231,8 +213,7 @@ mod tests {
             privacy_notice_acknowledged: false,
         };
 
-        let error = validate_profile(&profile, &OcrExternalProvider::Custom("custom".to_owned()))
-            .unwrap_err();
+        let error = validate_profile(&profile, &OcrExternalProvider::CustomHttp).unwrap_err();
 
         assert_eq!(error.code, "ocr_privacy_notice_required");
     }

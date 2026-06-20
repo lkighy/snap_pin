@@ -104,25 +104,9 @@ const builtinTranslationModelPackages = [
   },
 ];
 
-const localOcrProviders = new Set(["local-mnn", "local-onnx", "local-paddle"]);
+const localOcrProviders = new Set(["local-mnn"]);
 const localTranslationProviders = new Set(["local-ct2"]);
-const apiTranslationProviders = new Set([
-  "api-deepl",
-  "api-google",
-  "api-azure",
-  "api-openai",
-  "api-baidu",
-  "api-tencent",
-  "api-custom",
-]);
-const apiOcrProviders = new Set([
-  "api-openai",
-  "api-azure",
-  "api-google",
-  "api-baidu",
-  "api-tencent",
-  "api-custom",
-]);
+const apiOcrProviders = new Set(["api-custom"]);
 const recommendedOcrModelId = "ppocr-v5-mobile-mnn";
 const showModelRegistryDetails = import.meta.env.DEV;
 
@@ -475,14 +459,7 @@ export function SettingsPanel({
     const selectedModelId = settings.ocr.defaultModelId || autoModelId;
     const selectedModel = ocrModels.find((model) => model.id === selectedModelId);
     const manualModelSelected = Boolean(settings.ocr.defaultModelId);
-    const providerRequiredBackend =
-      ocrProvider === "local-mnn"
-        ? "mnn"
-        : ocrProvider === "local-onnx"
-          ? "onnx"
-          : ocrProvider === "local-paddle"
-            ? "paddle"
-            : null;
+    const providerRequiredBackend = ocrProvider === "local-mnn" ? "mnn" : null;
     const modelMatchesProvider =
       !usingLocalOcr ||
       !selectedModel ||
@@ -759,7 +736,6 @@ export function SettingsPanel({
     );
     const usingLocalTranslation =
       localTranslationProviders.has(translationProvider);
-    const usingApiTranslation = apiTranslationProviders.has(translationProvider);
     const autoTranslationModelId =
       readyLocalTranslationModels.find((model) =>
         model.id.includes(settings.translation.targetLanguage),
@@ -931,15 +907,6 @@ export function SettingsPanel({
                   },
                 })
               }
-            />
-          </SettingsSection>
-        ) : null}
-        {usingApiTranslation ? (
-          <SettingsSection title={t("section.translation.api")}>
-            <ModelTile
-              label="Translation API"
-              value="External API provider"
-              configuredLabel="scheduled after local CTranslate2 MVP"
             />
           </SettingsSection>
         ) : null}
@@ -1346,7 +1313,7 @@ function CapabilityRow({
       </div>
       {capability.reason ? (
         <p className="mt-2 break-words text-xs text-muted-foreground">
-          {formatCapabilityReason(capability.reason, t)}
+          {formatCapabilityReason(capability, t)}
         </p>
       ) : null}
       {capability.action ? (
@@ -1523,23 +1490,28 @@ function formatCapabilityStatus(
   }
 }
 
-function formatCapabilityReason(reason: string, t: Translator) {
-  switch (reason) {
-    case "platform capabilities have not loaded yet":
+function formatCapabilityReason(capability: CapabilityStatus, t: Translator) {
+  const reason = capability.reason ?? "";
+
+  switch (capability.reasonCode) {
+    case "platform_not_loaded":
       return t("platform.reason.notLoaded");
-    case "secure storage has not been implemented for Windows":
-      return t("platform.reason.secureStorageWindowsMissing");
-    case "Win32 platform capabilities are available only on Windows":
-      return t("platform.reason.win32Only");
-    case "Windows system OCR is available only on Windows":
-      return t("platform.reason.windowsOcrOnly");
+    case "secure_storage_not_implemented":
+      return t("platform.reason.secureStorageUnavailable");
+    case "platform_implementation_target_mismatch":
+      return t("platform.reason.platformTargetMismatch");
+    case "system_ocr_platform_only":
+      return t("platform.reason.systemOcrPlatformOnly");
+    case "platform_runtime_not_initialized":
+      return t("platform.reason.runtimeNotInitialized");
     default:
       break;
   }
 
-  const unsupportedPlatform = reason.match(
-    /^(.+) platform support has not been implemented yet$/,
-  );
+  const unsupportedPlatform =
+    capability.reasonCode === "platform_not_implemented"
+      ? reason.match(/^(.+) platform support has not been implemented yet$/)
+      : null;
   if (unsupportedPlatform) {
     const platform = unsupportedPlatform[1];
     return platform === "This"

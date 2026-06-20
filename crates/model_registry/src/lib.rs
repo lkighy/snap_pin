@@ -178,9 +178,6 @@ pub fn default_translation_model() -> ModelManifest {
 fn backend_name(backend: &OcrLocalBackend) -> String {
     match backend {
         OcrLocalBackend::Mnn => "mnn",
-        OcrLocalBackend::OnnxRuntime => "onnxruntime",
-        OcrLocalBackend::PaddleRuntime => "paddle",
-        OcrLocalBackend::Custom(value) => value,
     }
     .to_owned()
 }
@@ -188,7 +185,6 @@ fn backend_name(backend: &OcrLocalBackend) -> String {
 fn translate_backend_name(backend: &TranslateLocalBackend) -> String {
     match backend {
         TranslateLocalBackend::CTranslate2 => "ctranslate2",
-        TranslateLocalBackend::Custom(value) => value,
     }
     .to_owned()
 }

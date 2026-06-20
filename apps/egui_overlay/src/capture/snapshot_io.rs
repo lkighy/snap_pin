@@ -7,6 +7,7 @@ use eframe::egui::{
 };
 use image::{DynamicImage, GenericImageView};
 use perf_trace::{PerfSpan, log_elapsed};
+use platform_api::AppPlatform;
 use serde::Deserialize;
 
 use crate::runtime::control::SharedSnapshotCommand;
@@ -84,6 +85,7 @@ pub(crate) fn build_capture_regions(
 
 pub(crate) fn load_shared_snapshot(
     ctx: &Context,
+    platform: &dyn AppPlatform,
     snapshot: &SharedSnapshotCommand,
     text: OverlayText,
 ) -> Result<LoadedSharedSnapshot, String> {
@@ -101,7 +103,7 @@ pub(crate) fn load_shared_snapshot(
     }
 
     let platform_start = std::time::Instant::now();
-    let bytes = platform_runtime::create_platform()
+    let bytes = platform
         .shared_memory()
         .open(&snapshot.mapping_name, snapshot.byte_len)
         .map_err(|error| format!("{}: {error}", text.snapshot_load_failed))?;
@@ -243,6 +245,7 @@ pub(crate) fn crop_snapshot_to_file(
 }
 
 pub(crate) fn save_snapshot_to_file(
+    platform: &dyn AppPlatform,
     snapshot: &DynamicImage,
     selection: EguiRect,
     text: &OverlayText,
@@ -250,7 +253,7 @@ pub(crate) fn save_snapshot_to_file(
     let cropped = crop_snapshot(snapshot, selection);
     let default_name = capture_file_name();
     log::info!("prompting save path default_name={default_name}");
-    let Some(image_path) = platform_runtime::create_platform()
+    let Some(image_path) = platform
         .file_dialog()
         .save_png_path(&default_name)
         .map_err(|error| format!("{}: {error}", text.save_failed))?

@@ -1,14 +1,17 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use model_registry::ModelRegistry;
 use ocr_engine::{OcrEngine, RoutedOcrEngine};
 use perf_trace::{PerfSpan, log_elapsed};
+use platform_api::AppPlatform;
 use shared_models::{
     ImageData, ImageFormat, ImageId, ImageMetadata, OcrExternalProvider, OcrJob, OcrLocalBackend,
     OcrProvider, OcrResult, Point, Rect, Size,
 };
 
 pub(crate) struct PinOcrRequest {
+    pub(crate) platform: Arc<dyn AppPlatform>,
     pub(crate) path: PathBuf,
     pub(crate) provider: OcrProvider,
     pub(crate) language_hint: Option<String>,
@@ -54,11 +57,9 @@ pub(crate) fn recognize_pin_image(request: PinOcrRequest) -> Result<OcrResult, S
     };
 
     if job.provider == OcrProvider::System {
-        let platform_start = std::time::Instant::now();
-        let platform = platform_runtime::create_platform();
-        log_elapsed("pin_ocr_system_create_platform", platform_start);
         let recognize_start = std::time::Instant::now();
-        let result = platform
+        let result = request
+            .platform
             .system_ocr()
             .recognize(&job, &image_data)
             .map_err(|error| error.message);
@@ -109,14 +110,7 @@ pub(crate) fn parse_ocr_provider(value: &str) -> OcrProvider {
     match value {
         "disabled" => OcrProvider::Disabled,
         "system" => OcrProvider::System,
-        "local-onnx" => OcrProvider::Local(OcrLocalBackend::OnnxRuntime),
-        "local-paddle" => OcrProvider::Local(OcrLocalBackend::PaddleRuntime),
-        "api-openai" => OcrProvider::ExternalApi(OcrExternalProvider::OpenAi),
-        "api-azure" => OcrProvider::ExternalApi(OcrExternalProvider::AzureVision),
-        "api-google" => OcrProvider::ExternalApi(OcrExternalProvider::GoogleVision),
-        "api-baidu" => OcrProvider::ExternalApi(OcrExternalProvider::BaiduOcr),
-        "api-tencent" => OcrProvider::ExternalApi(OcrExternalProvider::TencentOcr),
-        "api-custom" => OcrProvider::ExternalApi(OcrExternalProvider::Custom("custom".to_owned())),
+        "api-custom" => OcrProvider::ExternalApi(OcrExternalProvider::CustomHttp),
         _ => OcrProvider::Local(OcrLocalBackend::Mnn),
     }
 }
@@ -159,15 +153,7 @@ fn ocr_provider_label(provider: &OcrProvider) -> &'static str {
         OcrProvider::Disabled => "disabled",
         OcrProvider::System => "system",
         OcrProvider::Local(OcrLocalBackend::Mnn) => "local-mnn",
-        OcrProvider::Local(OcrLocalBackend::OnnxRuntime) => "local-onnx",
-        OcrProvider::Local(OcrLocalBackend::PaddleRuntime) => "local-paddle",
-        OcrProvider::Local(OcrLocalBackend::Custom(_)) => "local-custom",
-        OcrProvider::ExternalApi(OcrExternalProvider::OpenAi) => "api-openai",
-        OcrProvider::ExternalApi(OcrExternalProvider::AzureVision) => "api-azure",
-        OcrProvider::ExternalApi(OcrExternalProvider::GoogleVision) => "api-google",
-        OcrProvider::ExternalApi(OcrExternalProvider::BaiduOcr) => "api-baidu",
-        OcrProvider::ExternalApi(OcrExternalProvider::TencentOcr) => "api-tencent",
-        OcrProvider::ExternalApi(OcrExternalProvider::Custom(_)) => "api-custom",
+        OcrProvider::ExternalApi(OcrExternalProvider::CustomHttp) => "api-custom",
     }
 }
 

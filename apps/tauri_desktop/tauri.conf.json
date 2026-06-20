@@ -2,10 +2,10 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "贴图钉",
   "version": "0.1.0",
-  "identifier": "dev.snap-pin.app",
+  "identifier": "dev.snap-pin",
   "build": {
     "beforeDevCommand": "pnpm --dir ui dev",
-    "beforeBuildCommand": "pnpm --dir ui build",
+    "beforeBuildCommand": "pnpm build",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "ui/dist"
   },
@@ -29,7 +29,17 @@
     }
   },
   "bundle": {
-    "active": false,
-    "targets": "all"
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.ico"],
+    "externalBin": ["../../target/release/egui_overlay"],
+    "resources": {
+      "../../third_party/ocr-rs-2.2.2/3rd_party/prebuilt/mnn-dev-windows-x86_64/lib/MNN.dll": ""
+    },
+    "windows": {
+      "wix": {
+        "language": "zh-CN"
+      }
+    }
   }
 }

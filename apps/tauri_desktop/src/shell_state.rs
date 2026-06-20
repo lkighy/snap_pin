@@ -92,6 +92,14 @@ impl ShellState {
         )
     }
 
+    pub fn record_mvp_results(
+        &mut self,
+        ocr: shared_models::OcrResult,
+        translation: shared_models::TranslationResult,
+    ) {
+        self.core.record_mvp_results(ocr, translation);
+    }
+
     pub fn model_summary(&self) -> String {
         let model_ids = self
             .core

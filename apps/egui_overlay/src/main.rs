@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod capture;
 mod overlay;
@@ -23,7 +24,8 @@ const RESIDENT_IDLE_Y: f32 = -32000.0;
 fn main() -> eframe::Result<()> {
     init_logging();
     let args = CliArgs::parse();
-    start_owner_watchdog(args.owner_pid);
+    start_owner_watchdog(args.owner_pid, platform_runtime::owner_process_is_alive);
+    let platform = platform_runtime::create_platform_arc();
     log::info!(
         "overlay starting mode={:?} resident={} owner_pid={:?} snapshot={:?} image={:?}",
         args.mode,
@@ -49,8 +51,16 @@ fn main() -> eframe::Result<()> {
         title,
         options,
         Box::new(move |creation_context| match args.mode {
-            OverlayRunMode::Capture => Ok(Box::new(CaptureOverlayApp::new(creation_context, args))),
-            OverlayRunMode::Pin => Ok(Box::new(PinWindowApp::new(creation_context, args))),
+            OverlayRunMode::Capture => Ok(Box::new(CaptureOverlayApp::new(
+                creation_context,
+                args,
+                platform,
+            ))),
+            OverlayRunMode::Pin => Ok(Box::new(PinWindowApp::new(
+                creation_context,
+                args,
+                platform,
+            ))),
         }),
     )
 }

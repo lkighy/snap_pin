@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
@@ -7,7 +8,7 @@ use eframe::egui::{
 };
 use eframe::{App, CreationContext, Frame};
 use image::{DynamicImage, GenericImageView};
-use platform_api::NativeWindowRef;
+use platform_api::{AppPlatform, PlatformWindowRef};
 use raw_window_handle::HasWindowHandle;
 use shared_models::{Point, Rect, Size};
 
@@ -25,8 +26,8 @@ use crate::capture::snapshot_io::{
     save_snapshot_to_file,
 };
 use crate::capture::window::{
-    hwnd_from_raw_window_handle, park_resident_window, request_resident_idle_repaint,
-    show_capture_window,
+    park_resident_window, platform_window_ref_from_raw_window_handle,
+    request_resident_idle_repaint, show_capture_window,
 };
 use crate::overlay::state::OverlayApp;
 use crate::pin::launch::{PinWindowLaunch, spawn_pin_window};
@@ -46,6 +47,7 @@ const DEFERRED_SAVE_DELAY_MS: u64 = 80;
 pub(crate) struct CaptureOverlayApp {
     state: OverlayApp,
     text: OverlayText,
+    platform: Arc<dyn AppPlatform>,
     screen_origin: Point,
     mask_opacity: f32,
     border_color: Color32,
@@ -90,7 +92,7 @@ pub(crate) struct CaptureOverlayApp {
     capture_regions: Vec<CaptureRegion>,
     hovered_region: Option<EguiRect>,
     selection: Option<EguiRect>,
-    window_hwnd: Option<isize>,
+    window_ref: Option<PlatformWindowRef>,
     drag_state: Option<CaptureDragState>,
     pending_save: Option<PendingSave>,
     status: CaptureStatus,
@@ -101,7 +103,11 @@ pub(crate) struct CaptureOverlayApp {
 }
 
 impl CaptureOverlayApp {
-    pub(crate) fn new(creation_context: &CreationContext<'_>, args: CliArgs) -> Self {
+    pub(crate) fn new(
+        creation_context: &CreationContext<'_>,
+        args: CliArgs,
+        platform: Arc<dyn AppPlatform>,
+    ) -> Self {
         install_system_fonts(&creation_context.egui_ctx);
         let text = OverlayText::new(args.language);
         let command_queue = args.resident.then(|| {
@@ -122,6 +128,7 @@ impl CaptureOverlayApp {
         Self {
             state: OverlayApp::default(),
             text,
+            platform,
             screen_origin: Point::new(args.x, args.y),
             mask_opacity: args.mask_opacity,
             border_color: args.border_color,
@@ -166,10 +173,10 @@ impl CaptureOverlayApp {
             capture_regions: Vec::new(),
             hovered_region: None,
             selection: None,
-            window_hwnd: creation_context
+            window_ref: creation_context
                 .window_handle()
                 .ok()
-                .and_then(|handle| hwnd_from_raw_window_handle(handle.as_raw())),
+                .and_then(|handle| platform_window_ref_from_raw_window_handle(handle.as_raw())),
             drag_state: None,
             pending_save: None,
             status: if args.resident {
@@ -466,11 +473,11 @@ impl CaptureOverlayApp {
 
     fn run_capture_action(&mut self, ctx: &Context, action: CaptureAction) {
         log::info!(
-            "capture action requested action={:?} status={:?} selection={:?} hwnd={:?}",
+            "capture action requested action={:?} status={:?} selection={:?} window={:?}",
             action,
             self.status,
             self.selection,
-            self.window_hwnd
+            self.window_ref
         );
         if matches!(self.status, CaptureStatus::Idle | CaptureStatus::Capturing) {
             log::info!("capture action ignored because status={:?}", self.status);
@@ -549,12 +556,9 @@ impl CaptureOverlayApp {
         }
 
         self.pending_save = None;
-        log::info!("opening save dialog hwnd={:?}", self.window_hwnd);
-        if let Some(hwnd) = self.window_hwnd {
-            if let Err(error) = platform_runtime::create_platform()
-                .window_ops()
-                .suspend_for_modal(NativeWindowRef::from_raw(hwnd))
-            {
+        log::info!("opening save dialog window={:?}", self.window_ref);
+        if let Some(window) = self.window_ref {
+            if let Err(error) = self.platform.window_ops().suspend_for_modal(window) {
                 log::warn!("failed to suspend capture window for modal dialog: {error}");
             }
         }
@@ -579,11 +583,8 @@ impl CaptureOverlayApp {
     }
 
     fn restore_capture_window(&self, ctx: &Context) {
-        if let Some(hwnd) = self.window_hwnd {
-            if let Err(error) = platform_runtime::create_platform()
-                .window_ops()
-                .restore_after_modal(NativeWindowRef::from_raw(hwnd), true)
-            {
+        if let Some(window) = self.window_ref {
+            if let Err(error) = self.platform.window_ops().restore_after_modal(window, true) {
                 log::warn!("failed to restore capture window after modal dialog: {error}");
             }
         }
@@ -682,7 +683,7 @@ impl CaptureOverlayApp {
             return Err(self.text.missing_snapshot.to_owned());
         };
 
-        save_snapshot_to_file(snapshot, selection, &self.text).map(|_| ())
+        save_snapshot_to_file(self.platform.as_ref(), snapshot, selection, &self.text).map(|_| ())
     }
 
     fn screen_rect(&self, selection: EguiRect) -> Rect {
@@ -697,14 +698,14 @@ impl CaptureOverlayApp {
 
     fn dismiss(&mut self, ctx: &Context) {
         log::info!(
-            "dismiss capture overlay resident={} hwnd={:?}",
+            "dismiss capture overlay resident={} window={:?}",
             self.resident,
-            self.window_hwnd
+            self.window_ref
         );
         if self.resident {
             self.clear_capture_state();
             self.status = CaptureStatus::Idle;
-            park_resident_window(ctx, self.window_hwnd);
+            park_resident_window(ctx, self.window_ref, self.platform.as_ref());
             request_resident_idle_repaint(ctx);
         } else {
             ctx.send_viewport_cmd(ViewportCommand::Close);
@@ -846,7 +847,7 @@ impl CaptureOverlayApp {
             self.border_color = color;
         }
 
-        match load_shared_snapshot(ctx, &command.snapshot, self.text) {
+        match load_shared_snapshot(ctx, self.platform.as_ref(), &command.snapshot, self.text) {
             Ok(snapshot) => {
                 log::info!("capture snapshot loaded");
                 self.snapshot_path = None;

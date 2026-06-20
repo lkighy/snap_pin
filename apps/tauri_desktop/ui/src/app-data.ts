@@ -41,29 +41,13 @@ export const completionActions = [
 
 export const ocrProviders = [
   { value: "local-mnn", labelKey: "provider.localMnn" },
-  { value: "local-onnx", labelKey: "provider.localOnnx" },
-  { value: "local-paddle", labelKey: "provider.localPaddle" },
   { value: "system", labelKey: "provider.systemOcr" },
-  { value: "api-openai", labelKey: "provider.openAi" },
-  { value: "api-azure", labelKey: "provider.azureVision" },
-  { value: "api-google", labelKey: "provider.googleVision" },
-  { value: "api-baidu", labelKey: "provider.baiduOcr" },
-  { value: "api-tencent", labelKey: "provider.tencentOcr" },
   { value: "api-custom", labelKey: "provider.customHttp" },
   { value: "disabled", labelKey: "provider.disabled" },
 ] satisfies Array<{ value: string; labelKey: TranslationKey }>;
 
 export const translationProviders = [
   { value: "local-ct2", labelKey: "provider.localCt2" },
-  { value: "api-deepl", labelKey: "provider.deepL" },
-  { value: "api-google", labelKey: "provider.googleTranslate" },
-  { value: "api-azure", labelKey: "provider.azureTranslate" },
-  { value: "api-openai", labelKey: "provider.openAi" },
-  { value: "api-baidu", labelKey: "provider.baiduTranslate" },
-  { value: "api-tencent", labelKey: "provider.tencentTranslate" },
-  { value: "api-custom", labelKey: "provider.customHttp" },
-  { value: "experimental-rust-bert", labelKey: "provider.rustBert" },
-  { value: "experimental-candle", labelKey: "provider.candle" },
   { value: "disabled", labelKey: "provider.disabled" },
 ] satisfies Array<{ value: string; labelKey: TranslationKey }>;
 
@@ -91,42 +75,52 @@ export const defaultStatus: AppStatus = {
   platformCapabilities: {
     screenCapture: {
       status: "unavailable",
+      reasonCode: "platform_not_loaded",
       reason: "platform capabilities have not loaded yet",
     },
     overlayWindow: {
       status: "unavailable",
+      reasonCode: "platform_not_loaded",
       reason: "platform capabilities have not loaded yet",
     },
     pinWindow: {
       status: "unavailable",
+      reasonCode: "platform_not_loaded",
       reason: "platform capabilities have not loaded yet",
     },
     systemOcr: {
       status: "unavailable",
+      reasonCode: "platform_not_loaded",
       reason: "platform capabilities have not loaded yet",
     },
     clipboardRead: {
       status: "unavailable",
+      reasonCode: "platform_not_loaded",
       reason: "platform capabilities have not loaded yet",
     },
     clipboardWrite: {
       status: "unavailable",
+      reasonCode: "platform_not_loaded",
       reason: "platform capabilities have not loaded yet",
     },
     globalHotkey: {
       status: "unavailable",
+      reasonCode: "platform_not_loaded",
       reason: "platform capabilities have not loaded yet",
     },
     fileDialog: {
       status: "unavailable",
+      reasonCode: "platform_not_loaded",
       reason: "platform capabilities have not loaded yet",
     },
     sharedMemory: {
       status: "unavailable",
+      reasonCode: "platform_not_loaded",
       reason: "platform capabilities have not loaded yet",
     },
     secureStorage: {
       status: "unavailable",
+      reasonCode: "platform_not_loaded",
       reason: "platform capabilities have not loaded yet",
     },
   },

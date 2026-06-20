@@ -1,10 +1,9 @@
 use crate::shell_state::ShellState;
 use shared_models::{
-    CoreCommand, CoreEvent, ImageData, ImageFormat, ImageId, ImageMetadata, OcrJob, Point, Rect,
-    Settings, Size, TranslationRequest,
+    CoreCommand, CoreEvent, ImageData, ImageFormat, ImageId, ImageMetadata, LanguageCode,
+    OcrResult, OcrTextBlock, Point, Rect, Settings, Size, TranslateLocalBackend, TranslateProvider,
+    TranslationRequest, TranslationResult,
 };
-use std::thread;
-use std::time::Duration;
 
 pub fn start_capture(state: &mut ShellState) -> Vec<CoreEvent> {
     state.dispatch(CoreCommand::StartCapture)
@@ -40,34 +39,38 @@ pub fn run_mvp_capture_ocr_translate(state: &mut ShellState) -> Vec<CoreEvent> {
         image: image.clone(),
         region,
     }));
-    events.extend(state.dispatch(CoreCommand::RunOcrAndTranslate {
-        job: OcrJob {
-            id: "ocr-mvp-capture-001".to_owned(),
-            image_id: image.id,
-            source_rect: Some(region),
-            language_hint: Some("en".to_owned()),
-            provider: state.settings().ocr.provider.clone(),
-            provider_profile_id: state.settings().ocr.default_provider_profile_id.clone(),
-            model_id: None,
-        },
-        target_language: state.settings().translate.target_language.clone(),
-    }));
-    for _ in 0..20 {
-        thread::sleep(Duration::from_millis(25));
-        let drained = state.dispatch(CoreCommand::DrainEvents);
-        let done = drained.iter().any(|event| {
-            matches!(
-                event,
-                CoreEvent::OcrCompleted { .. }
-                    | CoreEvent::TranslationCompleted { .. }
-                    | CoreEvent::Error { .. }
-            )
-        });
-        events.extend(drained);
-        if done {
-            break;
-        }
-    }
+
+    let job_id = "ocr-mvp-capture-001".to_owned();
+    let request_id = format!("translate-{job_id}");
+    let source_text = "Mock OCR text from mvp-capture-001 using mvp-mock-ocr".to_owned();
+    let target_language = state.settings().translate.target_language.clone();
+    let ocr_result = OcrResult {
+        job_id: job_id.clone(),
+        image_id: image.id.clone(),
+        blocks: vec![OcrTextBlock {
+            text: source_text.clone(),
+            bounds: region,
+            confidence: Some(0.99),
+            language: Some("en".to_owned()),
+        }],
+        plain_text: source_text.clone(),
+    };
+    let translation_result = TranslationResult {
+        request_id: request_id.clone(),
+        source_text: source_text.clone(),
+        translated_text: format!("[en -> {target_language} via mvp-mock-translate] {source_text}"),
+        source_language: Some(LanguageCode::new("en")),
+        target_language: LanguageCode::new(target_language),
+        provider: TranslateProvider::Local(TranslateLocalBackend::CTranslate2),
+    };
+
+    state.record_mvp_results(ocr_result.clone(), translation_result.clone());
+    events.push(CoreEvent::OcrQueued { job_id });
+    events.push(CoreEvent::OcrCompleted { result: ocr_result });
+    events.push(CoreEvent::TranslationQueued { request_id });
+    events.push(CoreEvent::TranslationCompleted {
+        result: translation_result,
+    });
 
     events
 }

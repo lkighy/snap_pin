@@ -1,10 +1,12 @@
 use platform_api::{
     AppPlatform, CapabilityStatus, Clipboard, ClipboardPayload, FileDialog, GlobalHotkey,
-    HotkeyEventSink, HotkeyRegistration, HotkeyToken, ImageData, MonitorInfo, NativeWindowRef,
-    OcrJob, OcrResult, PlatformCapabilities, PlatformCapability, PlatformError, Rect,
+    HotkeyEventSink, HotkeyRegistration, HotkeyToken, ImageData, MonitorInfo, OcrJob, OcrResult,
+    PlatformCapabilities, PlatformCapability, PlatformError, PlatformWindowRef, Rect,
     ScreenCapture, SharedMemory, SharedMemoryCreateRequest, SharedMemoryHandle, SystemOcr,
     WindowOps,
 };
+
+const PLATFORM_NOT_IMPLEMENTED: &str = "platform_not_implemented";
 
 #[derive(Debug)]
 pub struct StubPlatform {
@@ -25,7 +27,10 @@ impl Default for StubPlatform {
             current_platform_name()
         );
         Self {
-            capabilities: PlatformCapabilities::unavailable(reason.clone()),
+            capabilities: PlatformCapabilities::unavailable(
+                PLATFORM_NOT_IMPLEMENTED,
+                reason.clone(),
+            ),
             screen_capture: StubScreenCapture::new(reason.clone()),
             system_ocr: StubSystemOcr::new(reason.clone()),
             clipboard: StubClipboard::new(reason.clone()),
@@ -121,7 +126,7 @@ impl StubSystemOcr {
 
 impl SystemOcr for StubSystemOcr {
     fn availability(&self) -> CapabilityStatus {
-        CapabilityStatus::unavailable(self.reason.clone())
+        CapabilityStatus::unavailable(PLATFORM_NOT_IMPLEMENTED, self.reason.clone())
     }
 
     fn recognize(&self, _job: &OcrJob, _image: &ImageData) -> Result<OcrResult, PlatformError> {
@@ -207,7 +212,7 @@ impl WindowOps for StubWindowOps {
 
     fn set_always_on_top(
         &self,
-        _window: NativeWindowRef,
+        _window: PlatformWindowRef,
         _enabled: bool,
     ) -> Result<(), PlatformError> {
         Err(unavailable(
@@ -218,7 +223,7 @@ impl WindowOps for StubWindowOps {
 
     fn set_click_through(
         &self,
-        _window: NativeWindowRef,
+        _window: PlatformWindowRef,
         _enabled: bool,
     ) -> Result<(), PlatformError> {
         Err(unavailable(
@@ -227,7 +232,7 @@ impl WindowOps for StubWindowOps {
         ))
     }
 
-    fn park_window(&self, _window: NativeWindowRef, _bounds: Rect) -> Result<(), PlatformError> {
+    fn park_window(&self, _window: PlatformWindowRef, _bounds: Rect) -> Result<(), PlatformError> {
         Err(unavailable(
             PlatformCapability::OverlayWindow,
             self.reason.clone(),
@@ -236,7 +241,7 @@ impl WindowOps for StubWindowOps {
 
     fn move_client_area_to(
         &self,
-        _window: NativeWindowRef,
+        _window: PlatformWindowRef,
         _position: shared_models::Point,
     ) -> Result<(), PlatformError> {
         Err(unavailable(
@@ -245,7 +250,7 @@ impl WindowOps for StubWindowOps {
         ))
     }
 
-    fn suspend_for_modal(&self, _window: NativeWindowRef) -> Result<(), PlatformError> {
+    fn suspend_for_modal(&self, _window: PlatformWindowRef) -> Result<(), PlatformError> {
         Err(unavailable(
             PlatformCapability::OverlayWindow,
             self.reason.clone(),
@@ -254,7 +259,7 @@ impl WindowOps for StubWindowOps {
 
     fn restore_after_modal(
         &self,
-        _window: NativeWindowRef,
+        _window: PlatformWindowRef,
         _always_on_top: bool,
     ) -> Result<(), PlatformError> {
         Err(unavailable(

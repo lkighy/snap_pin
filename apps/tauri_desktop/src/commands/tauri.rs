@@ -45,6 +45,7 @@ pub struct PlatformCapabilitiesDto {
 #[serde(rename_all = "camelCase")]
 pub struct CapabilityStatusDto {
     pub status: &'static str,
+    pub reason_code: Option<String>,
     pub reason: Option<String>,
     pub action: Option<String>,
 }
@@ -204,10 +205,11 @@ pub fn choose_ocr_model_storage_dir(
     app: AppHandle,
     state: State<'_, Mutex<ShellState>>,
     runtime: State<'_, Mutex<ModelDownloadRuntime>>,
+    platform: State<'_, Arc<dyn platform_api::AppPlatform>>,
 ) -> Result<Option<ModelStorageInfoDto>, String> {
     log::info!("tauri command choose_ocr_model_storage_dir started");
     ensure_no_model_download_running(&runtime)?;
-    let Some(path) = platform_runtime::create_platform()
+    let Some(path) = platform
         .file_dialog()
         .pick_folder("Choose OCR model download location")
         .map_err(|error| format!("{}: {}", error.code, error.message))?
@@ -837,26 +839,44 @@ impl From<platform_api::CapabilityStatus> for CapabilityStatusDto {
         match status {
             platform_api::CapabilityStatus::Supported => Self {
                 status: "supported",
+                reason_code: None,
                 reason: None,
                 action: None,
             },
-            platform_api::CapabilityStatus::Degraded { reason } => Self {
+            platform_api::CapabilityStatus::Degraded {
+                reason_code,
+                reason,
+            } => Self {
                 status: "degraded",
+                reason_code: Some(reason_code),
                 reason: Some(reason),
                 action: None,
             },
-            platform_api::CapabilityStatus::NeedsSetup { reason, action } => Self {
+            platform_api::CapabilityStatus::NeedsSetup {
+                reason_code,
+                reason,
+                action,
+            } => Self {
                 status: "needsSetup",
+                reason_code: Some(reason_code),
                 reason: Some(reason),
                 action,
             },
-            platform_api::CapabilityStatus::PermissionDenied { reason } => Self {
+            platform_api::CapabilityStatus::PermissionDenied {
+                reason_code,
+                reason,
+            } => Self {
                 status: "permissionDenied",
+                reason_code: Some(reason_code),
                 reason: Some(reason),
                 action: None,
             },
-            platform_api::CapabilityStatus::Unavailable { reason } => Self {
+            platform_api::CapabilityStatus::Unavailable {
+                reason_code,
+                reason,
+            } => Self {
                 status: "unavailable",
+                reason_code: Some(reason_code),
                 reason: Some(reason),
                 action: None,
             },

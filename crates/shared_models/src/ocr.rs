@@ -11,28 +11,16 @@ pub enum OcrProvider {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OcrLocalBackend {
     Mnn,
-    OnnxRuntime,
-    PaddleRuntime,
-    Custom(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OcrExternalProvider {
-    OpenAi,
-    AzureVision,
-    GoogleVision,
-    BaiduOcr,
-    TencentOcr,
-    Custom(String),
+    CustomHttp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OcrRunMode {
-    Lightweight,
     Standard,
-    Compatible,
-    Advanced,
-    Cloud,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

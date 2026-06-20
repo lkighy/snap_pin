@@ -1,4 +1,4 @@
-pub use platform_api::{CaptureWindowRegion, NativeWindowRef, WindowOps};
+pub use platform_api::{CaptureWindowRegion, PlatformWindowRef, WindowOps};
 use platform_api::{PlatformError, Rect};
 use shared_models::Point;
 

@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 
 use platform_api::{
     AppPlatform, CapabilityStatus, Clipboard, ClipboardPayload, FileDialog, GlobalHotkey,
-    HotkeyEventSink, HotkeyRegistration, HotkeyToken, ImageData, MonitorInfo, NativeWindowRef,
-    OcrJob, OcrResult, PlatformCapabilities, PlatformError, Rect, ScreenCapture, SharedMemory,
+    HotkeyEventSink, HotkeyRegistration, HotkeyToken, ImageData, MonitorInfo, OcrJob, OcrResult,
+    PlatformCapabilities, PlatformError, PlatformWindowRef, Rect, ScreenCapture, SharedMemory,
     SharedMemoryCreateRequest, SharedMemoryHandle, SystemOcr, WindowOps,
 };
 
@@ -150,42 +150,42 @@ impl WindowOps for Win32WindowOps {
 
     fn set_always_on_top(
         &self,
-        window: NativeWindowRef,
+        window: PlatformWindowRef,
         enabled: bool,
     ) -> Result<(), PlatformError> {
-        set_always_on_top(window.raw, enabled)
+        set_always_on_top(window.raw_handle(), enabled)
     }
 
     fn set_click_through(
         &self,
-        window: NativeWindowRef,
+        window: PlatformWindowRef,
         enabled: bool,
     ) -> Result<(), PlatformError> {
-        set_click_through(window.raw, enabled)
+        set_click_through(window.raw_handle(), enabled)
     }
 
-    fn park_window(&self, window: NativeWindowRef, bounds: Rect) -> Result<(), PlatformError> {
-        crate::try_park_window(window.raw, bounds, true)
+    fn park_window(&self, window: PlatformWindowRef, bounds: Rect) -> Result<(), PlatformError> {
+        crate::try_park_window(window.raw_handle(), bounds, true)
     }
 
     fn move_client_area_to(
         &self,
-        window: NativeWindowRef,
+        window: PlatformWindowRef,
         position: shared_models::Point,
     ) -> Result<(), PlatformError> {
-        crate::move_client_area_to(window.raw, position)
+        crate::move_client_area_to(window.raw_handle(), position)
     }
 
-    fn suspend_for_modal(&self, window: NativeWindowRef) -> Result<(), PlatformError> {
-        crate::try_suspend_window_for_modal_dialog(window.raw)
+    fn suspend_for_modal(&self, window: PlatformWindowRef) -> Result<(), PlatformError> {
+        crate::try_suspend_window_for_modal_dialog(window.raw_handle())
     }
 
     fn restore_after_modal(
         &self,
-        window: NativeWindowRef,
+        window: PlatformWindowRef,
         always_on_top: bool,
     ) -> Result<(), PlatformError> {
-        crate::try_restore_window_after_modal_dialog(window.raw, always_on_top)
+        crate::try_restore_window_after_modal_dialog(window.raw_handle(), always_on_top)
     }
 }
 
@@ -317,6 +317,7 @@ fn win32_capabilities() -> PlatformCapabilities {
         file_dialog: CapabilityStatus::Supported,
         shared_memory: CapabilityStatus::Supported,
         secure_storage: CapabilityStatus::unavailable(
+            "secure_storage_not_implemented",
             "secure storage has not been implemented for Windows",
         ),
     }
@@ -324,7 +325,10 @@ fn win32_capabilities() -> PlatformCapabilities {
 
 #[cfg(not(windows))]
 fn win32_capabilities() -> PlatformCapabilities {
-    PlatformCapabilities::unavailable("Win32 platform capabilities are available only on Windows")
+    PlatformCapabilities::unavailable(
+        "platform_implementation_target_mismatch",
+        "Windows platform capabilities are available only on Windows",
+    )
 }
 
 #[cfg(windows)]
@@ -334,5 +338,8 @@ fn system_ocr_status() -> CapabilityStatus {
 
 #[cfg(not(windows))]
 fn system_ocr_status() -> CapabilityStatus {
-    CapabilityStatus::unavailable("Windows system OCR is available only on Windows")
+    CapabilityStatus::unavailable(
+        "system_ocr_platform_only",
+        "Windows system OCR is available only on Windows",
+    )
 }

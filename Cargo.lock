@@ -1743,7 +1743,6 @@ dependencies = [
  "serde_json",
  "shared_models",
  "translate_engine",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

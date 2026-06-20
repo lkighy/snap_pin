@@ -2,29 +2,39 @@
 pub enum CapabilityStatus {
     Supported,
     Degraded {
+        reason_code: String,
         reason: String,
     },
     NeedsSetup {
+        reason_code: String,
         reason: String,
         action: Option<String>,
     },
     PermissionDenied {
+        reason_code: String,
         reason: String,
     },
     Unavailable {
+        reason_code: String,
         reason: String,
     },
 }
 
 impl CapabilityStatus {
-    pub fn unavailable(reason: impl Into<String>) -> Self {
+    pub fn unavailable(reason_code: impl Into<String>, reason: impl Into<String>) -> Self {
         Self::Unavailable {
+            reason_code: reason_code.into(),
             reason: reason.into(),
         }
     }
 
-    pub fn needs_setup(reason: impl Into<String>, action: Option<String>) -> Self {
+    pub fn needs_setup(
+        reason_code: impl Into<String>,
+        reason: impl Into<String>,
+        action: Option<String>,
+    ) -> Self {
         Self::NeedsSetup {
+            reason_code: reason_code.into(),
             reason: reason.into(),
             action,
         }
@@ -46,19 +56,20 @@ pub struct PlatformCapabilities {
 }
 
 impl PlatformCapabilities {
-    pub fn unavailable(reason: impl Into<String>) -> Self {
+    pub fn unavailable(reason_code: impl Into<String>, reason: impl Into<String>) -> Self {
+        let reason_code = reason_code.into();
         let reason = reason.into();
         Self {
-            screen_capture: CapabilityStatus::unavailable(reason.clone()),
-            overlay_window: CapabilityStatus::unavailable(reason.clone()),
-            pin_window: CapabilityStatus::unavailable(reason.clone()),
-            system_ocr: CapabilityStatus::unavailable(reason.clone()),
-            clipboard_read: CapabilityStatus::unavailable(reason.clone()),
-            clipboard_write: CapabilityStatus::unavailable(reason.clone()),
-            global_hotkey: CapabilityStatus::unavailable(reason.clone()),
-            file_dialog: CapabilityStatus::unavailable(reason.clone()),
-            shared_memory: CapabilityStatus::unavailable(reason.clone()),
-            secure_storage: CapabilityStatus::unavailable(reason),
+            screen_capture: CapabilityStatus::unavailable(reason_code.clone(), reason.clone()),
+            overlay_window: CapabilityStatus::unavailable(reason_code.clone(), reason.clone()),
+            pin_window: CapabilityStatus::unavailable(reason_code.clone(), reason.clone()),
+            system_ocr: CapabilityStatus::unavailable(reason_code.clone(), reason.clone()),
+            clipboard_read: CapabilityStatus::unavailable(reason_code.clone(), reason.clone()),
+            clipboard_write: CapabilityStatus::unavailable(reason_code.clone(), reason.clone()),
+            global_hotkey: CapabilityStatus::unavailable(reason_code.clone(), reason.clone()),
+            file_dialog: CapabilityStatus::unavailable(reason_code.clone(), reason.clone()),
+            shared_memory: CapabilityStatus::unavailable(reason_code.clone(), reason.clone()),
+            secure_storage: CapabilityStatus::unavailable(reason_code, reason),
         }
     }
 }

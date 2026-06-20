@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use perf_trace::{PerfSpan, log_elapsed};
 use platform_api::{
-    CaptureRequest, CaptureWindowRegion, CapturedFrame, SharedMemoryCreateRequest,
+    AppPlatform, CaptureRequest, CaptureWindowRegion, CapturedFrame, SharedMemoryCreateRequest,
     SharedMemoryHandle,
 };
 use shared_models::ImageFormat;
@@ -20,11 +20,11 @@ pub(crate) struct SnapshotCapture {
     pub(crate) mapping: SharedMemoryHandle,
 }
 
-pub(crate) fn capture_snapshot(include_cursor: bool) -> Result<SnapshotCapture, String> {
+pub(crate) fn capture_snapshot(
+    platform: &dyn AppPlatform,
+    include_cursor: bool,
+) -> Result<SnapshotCapture, String> {
     let mut span = PerfSpan::new("capture_snapshot_total").field("include_cursor", include_cursor);
-    let platform_start = std::time::Instant::now();
-    let platform = platform_runtime::create_platform();
-    log_elapsed("capture_snapshot_create_platform", platform_start);
     let bounds_start = std::time::Instant::now();
     let bounds = platform
         .screen_capture()

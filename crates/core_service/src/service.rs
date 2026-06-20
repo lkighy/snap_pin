@@ -111,6 +111,20 @@ impl CoreService {
         self.history.lock().expect("history lock poisoned").clone()
     }
 
+    pub fn record_mvp_results(
+        &mut self,
+        ocr: shared_models::OcrResult,
+        translation: shared_models::TranslationResult,
+    ) {
+        if !self.settings.history.enabled {
+            return;
+        }
+
+        let mut history = self.history.lock().expect("history lock poisoned");
+        history.push_ocr(ocr);
+        history.push_translation(translation);
+    }
+
     pub fn models(&self) -> &ModelRegistry {
         &self.models
     }
@@ -134,7 +148,12 @@ impl CoreService {
 
     pub fn platform_capabilities(&self) -> PlatformCapabilities {
         self.platform.as_ref().map_or_else(
-            || PlatformCapabilities::unavailable("platform runtime is not initialized"),
+            || {
+                PlatformCapabilities::unavailable(
+                    "platform_runtime_not_initialized",
+                    "platform runtime is not initialized",
+                )
+            },
             |platform| platform.capabilities(),
         )
     }
@@ -582,15 +601,7 @@ fn ocr_provider_label(provider: &OcrProvider) -> &'static str {
         OcrProvider::Disabled => "disabled",
         OcrProvider::System => "system",
         OcrProvider::Local(shared_models::OcrLocalBackend::Mnn) => "local-mnn",
-        OcrProvider::Local(shared_models::OcrLocalBackend::OnnxRuntime) => "local-onnx",
-        OcrProvider::Local(shared_models::OcrLocalBackend::PaddleRuntime) => "local-paddle",
-        OcrProvider::Local(shared_models::OcrLocalBackend::Custom(_)) => "local-custom",
-        OcrProvider::ExternalApi(shared_models::OcrExternalProvider::OpenAi) => "api-openai",
-        OcrProvider::ExternalApi(shared_models::OcrExternalProvider::AzureVision) => "api-azure",
-        OcrProvider::ExternalApi(shared_models::OcrExternalProvider::GoogleVision) => "api-google",
-        OcrProvider::ExternalApi(shared_models::OcrExternalProvider::BaiduOcr) => "api-baidu",
-        OcrProvider::ExternalApi(shared_models::OcrExternalProvider::TencentOcr) => "api-tencent",
-        OcrProvider::ExternalApi(shared_models::OcrExternalProvider::Custom(_)) => "api-custom",
+        OcrProvider::ExternalApi(shared_models::OcrExternalProvider::CustomHttp) => "api-custom",
     }
 }
 
@@ -598,33 +609,6 @@ fn translate_provider_label(provider: &TranslateProvider) -> &'static str {
     match provider {
         TranslateProvider::Disabled => "disabled",
         TranslateProvider::Local(shared_models::TranslateLocalBackend::CTranslate2) => "local-ct2",
-        TranslateProvider::Local(shared_models::TranslateLocalBackend::Custom(_)) => "local-custom",
-        TranslateProvider::ExternalApi(shared_models::TranslateExternalProvider::DeepL) => {
-            "api-deepl"
-        }
-        TranslateProvider::ExternalApi(shared_models::TranslateExternalProvider::Google) => {
-            "api-google"
-        }
-        TranslateProvider::ExternalApi(shared_models::TranslateExternalProvider::Azure) => {
-            "api-azure"
-        }
-        TranslateProvider::ExternalApi(shared_models::TranslateExternalProvider::OpenAi) => {
-            "api-openai"
-        }
-        TranslateProvider::ExternalApi(shared_models::TranslateExternalProvider::Baidu) => {
-            "api-baidu"
-        }
-        TranslateProvider::ExternalApi(shared_models::TranslateExternalProvider::Tencent) => {
-            "api-tencent"
-        }
-        TranslateProvider::ExternalApi(shared_models::TranslateExternalProvider::CustomHttp) => {
-            "api-custom"
-        }
-        TranslateProvider::ExternalApi(shared_models::TranslateExternalProvider::Custom(_)) => {
-            "api-custom"
-        }
-        TranslateProvider::Experimental(_) => "experimental",
-        TranslateProvider::Custom(_) => "custom",
     }
 }
 

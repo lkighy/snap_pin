@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -12,12 +12,13 @@ use image::{DynamicImage, ImageBuffer, Rgba, RgbaImage};
 use imageproc::drawing::{draw_text_mut, text_size};
 use perf_trace::{PerfSpan, log_elapsed};
 use platform_api::{
-    CaptureWindowRegion, ClipboardPayload, HotkeyRegistration, HotkeyToken, SharedMemoryHandle,
+    AppPlatform, CaptureWindowRegion, ClipboardPayload, HotkeyRegistration, HotkeyToken,
+    SharedMemoryHandle,
 };
 use serde::{Deserialize, Serialize};
 use shared_models::{
     CaptureCompletionAction, OcrExternalProvider, OcrLocalBackend, OcrProvider, Settings,
-    TranslateExternalProvider, TranslateLocalBackend, TranslateProvider,
+    TranslateLocalBackend, TranslateProvider,
 };
 use tauri::{AppHandle, Manager};
 
@@ -238,7 +239,8 @@ pub fn launch_capture_overlay_for_settings(
         .map(|path| path.to_string_lossy().into_owned());
     log_elapsed("capture_overlay_model_registry_path", model_registry_start);
     let snapshot_start = std::time::Instant::now();
-    let snapshot = capture_snapshot(settings.capture.include_cursor)?;
+    let platform = platform_from_app(app)?;
+    let snapshot = capture_snapshot(platform.as_ref(), settings.capture.include_cursor)?;
     log_elapsed("capture_overlay_capture_snapshot", snapshot_start);
     let command = OverlayCaptureCommand::from_settings(settings, &snapshot)
         .with_model_registry_path(model_registry_path.clone());
@@ -329,7 +331,8 @@ pub fn register_capture_hotkey_for_settings(
         .map_err(|_| "hotkey listener lock poisoned".to_owned())?;
     *guard = None;
 
-    let listener = platform_runtime::create_platform()
+    let platform = platform_from_app(app)?;
+    let listener = platform
         .global_hotkey()
         .register(
             registration,
@@ -364,7 +367,8 @@ pub fn register_clipboard_pin_hotkey_for_settings(
         .map_err(|_| "pin hotkey listener lock poisoned".to_owned())?;
     *guard = None;
 
-    let listener = platform_runtime::create_platform()
+    let platform = platform_from_app(app)?;
+    let listener = platform
         .global_hotkey()
         .register(
             registration,
@@ -399,6 +403,12 @@ fn current_settings(app: &AppHandle) -> Result<Settings, String> {
         .lock()
         .map(|state| state.settings().clone())
         .map_err(|_| "shell state lock poisoned".to_owned())
+}
+
+fn platform_from_app(app: &AppHandle) -> Result<Arc<dyn AppPlatform>, String> {
+    app.try_state::<Arc<dyn AppPlatform>>()
+        .map(|platform| platform.inner().clone())
+        .ok_or_else(|| "platform runtime is not initialized".to_owned())
 }
 
 fn ensure_overlay_resident_locked(
@@ -640,7 +650,8 @@ fn pin_clipboard_content(app: &AppHandle) -> Result<(), String> {
     let model_registry_path = models::models_path(app)
         .ok()
         .map(|path| path.to_string_lossy().into_owned());
-    let payload = platform_runtime::create_platform()
+    let platform = platform_from_app(app)?;
+    let payload = platform
         .clipboard()
         .read()
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
@@ -1207,15 +1218,7 @@ fn ocr_provider_name(provider: &OcrProvider) -> String {
         OcrProvider::Disabled => "disabled",
         OcrProvider::System => "system",
         OcrProvider::Local(OcrLocalBackend::Mnn) => "local-mnn",
-        OcrProvider::Local(OcrLocalBackend::OnnxRuntime) => "local-onnx",
-        OcrProvider::Local(OcrLocalBackend::PaddleRuntime) => "local-paddle",
-        OcrProvider::Local(OcrLocalBackend::Custom(_)) => "local-custom",
-        OcrProvider::ExternalApi(OcrExternalProvider::OpenAi) => "api-openai",
-        OcrProvider::ExternalApi(OcrExternalProvider::AzureVision) => "api-azure",
-        OcrProvider::ExternalApi(OcrExternalProvider::GoogleVision) => "api-google",
-        OcrProvider::ExternalApi(OcrExternalProvider::BaiduOcr) => "api-baidu",
-        OcrProvider::ExternalApi(OcrExternalProvider::TencentOcr) => "api-tencent",
-        OcrProvider::ExternalApi(OcrExternalProvider::Custom(_)) => "api-custom",
+        OcrProvider::ExternalApi(OcrExternalProvider::CustomHttp) => "api-custom",
     }
     .to_owned()
 }
@@ -1224,17 +1227,6 @@ fn translate_provider_name(provider: &TranslateProvider) -> String {
     match provider {
         TranslateProvider::Disabled => "disabled",
         TranslateProvider::Local(TranslateLocalBackend::CTranslate2) => "local-ct2",
-        TranslateProvider::Local(TranslateLocalBackend::Custom(_)) => "local-custom",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::DeepL) => "api-deepl",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::Google) => "api-google",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::Azure) => "api-azure",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::OpenAi) => "api-openai",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::Baidu) => "api-baidu",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::Tencent) => "api-tencent",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::CustomHttp) => "api-custom",
-        TranslateProvider::ExternalApi(TranslateExternalProvider::Custom(_)) => "api-custom",
-        TranslateProvider::Experimental(_) => "experimental",
-        TranslateProvider::Custom(_) => "custom",
     }
     .to_owned()
 }

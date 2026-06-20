@@ -1,3 +1,4 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![allow(dead_code)]
 
 mod capture;
@@ -8,6 +9,7 @@ mod settings;
 mod shell_state;
 mod tray;
 
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Instant;
@@ -52,9 +54,11 @@ fn main() {
             let setup_span = PerfSpan::new("tauri_setup_total");
             log::info!("tauri setup started");
             let app_handle = app.handle().clone();
+            prepend_runtime_library_paths(&app_handle);
             let platform_start = Instant::now();
             let platform = platform_runtime::create_platform_arc();
             log_elapsed("tauri_setup_create_platform", platform_start);
+            app.manage(platform.clone());
             let shell_state_start = Instant::now();
             let state = ShellState::from_store_with_platform(&app_handle, platform);
             log_elapsed("tauri_setup_load_shell_state", shell_state_start);
@@ -132,4 +136,29 @@ fn run_cli_mvp() {
 
     println!("{}", state.history_summary());
     log::info!("mvp cli finished");
+}
+
+fn prepend_runtime_library_paths(app: &tauri::AppHandle) {
+    let mut paths = Vec::<PathBuf>::new();
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        paths.push(resource_dir);
+    }
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(parent) = exe_path.parent() {
+            paths.push(parent.to_path_buf());
+        }
+    }
+
+    let current_path = std::env::var_os("PATH");
+    if let Some(current_path) = current_path {
+        paths.extend(std::env::split_paths(&current_path));
+    }
+
+    if let Ok(joined) = std::env::join_paths(paths) {
+        unsafe {
+            std::env::set_var("PATH", joined);
+        }
+    }
 }

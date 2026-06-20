@@ -21,7 +21,7 @@ shared_models.workspace = true
 tauri = { version = "2", features = ["tray-icon"] }
 
 [build-dependencies]
-tauri-build = { version = "2" }
+tauri-build = { version = "2", features = [] }
 
 [features]
 default = []
