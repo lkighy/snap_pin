@@ -4,6 +4,8 @@
 experience is fast screenshot selection, pin windows, OCR, translation, history,
 and extensible AI/plugin workflows.
 
+中文文档见 [README.zh-CN.md](README.zh-CN.md).
+
 The repository is currently a Rust workspace scaffold with clear ownership
 boundaries. See [docs/ARCHITECTURE_RULES.md](docs/ARCHITECTURE_RULES.md) before
 adding implementation code.
